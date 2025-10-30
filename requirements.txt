@@ -1,0 +1,26 @@
+# 核心框架
+streamlit>=1.28.0
+pydantic>=2.0.0
+fastapi>=0.104.0
+
+# 数据处理
+pandas>=2.0.0
+# sqlite3 is a built-in Python library
+
+# LLM集成
+requests>=2.31.0
+dashscope>=1.14.0
+
+# 测试框架
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# 工具库
+python-dotenv>=1.0.0
+loguru>=0.7.0
+python-dateutil>=2.8.2
+
+# 类型检查和代码质量
+mypy>=1.5.0
+black>=23.0.0
+flake8>=6.0.0
