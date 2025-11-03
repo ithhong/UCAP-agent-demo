@@ -9,7 +9,7 @@ Canonical数据模型定义
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, validator, EmailStr
+from pydantic import BaseModel, Field, field_validator, EmailStr, ValidationInfo
 from enum import Enum
 
 
@@ -56,9 +56,9 @@ class Organization(BaseModel):
     """
     
     org_id: str = Field(
-        ..., 
-        description="统一组织ID，格式: {system}_{original_id}",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        ...,
+        description="统一组织ID格式: {system}_{original_id}",
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     org_name: str = Field(
@@ -76,7 +76,7 @@ class Organization(BaseModel):
     parent_org_id: Optional[str] = Field(
         None, 
         description="父组织ID，支持层级结构",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     org_code: Optional[str] = Field(
@@ -119,7 +119,8 @@ class Organization(BaseModel):
         description="原始数据，用于调试和追溯"
     )
 
-    @validator('org_id')
+    @field_validator('org_id')
+    @classmethod
     def validate_org_id(cls, v):
         """验证组织ID格式"""
         if not v:
@@ -129,11 +130,12 @@ class Organization(BaseModel):
             raise ValueError("组织ID格式错误，应为: {system}_{original_id}")
         return v
 
-    @validator('source_system')
-    def validate_source_system_consistency(cls, v, values):
+    @field_validator('source_system')
+    @classmethod
+    def validate_source_system_consistency(cls, v, info: ValidationInfo):
         """验证来源系统与ID前缀一致性"""
-        if 'org_id' in values:
-            system_prefix = values['org_id'].split('_')[0]
+        if info.data and 'org_id' in info.data:
+            system_prefix = info.data['org_id'].split('_')[0]
             if system_prefix != v.value:
                 raise ValueError(f"来源系统({v})与ID前缀({system_prefix})不一致")
         return v
@@ -148,9 +150,9 @@ class Person(BaseModel):
     """
     
     person_id: str = Field(
-        ..., 
-        description="统一人员ID，格式: {system}_{original_id}",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        ...,
+        description="统一人员ID格式: {system}_{original_id}",
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     person_name: str = Field(
@@ -168,7 +170,7 @@ class Person(BaseModel):
     org_id: str = Field(
         ..., 
         description="关联组织ID",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     position: Optional[str] = Field(
@@ -187,9 +189,9 @@ class Person(BaseModel):
     )
     
     phone: Optional[str] = Field(
-        None, 
+        None,
         description="联系电话",
-        regex=r"^[\d\-\+\(\)\s]+$"
+        pattern=r"^[\d\-\+\(\)\s]+$"
     )
     
     hire_date: Optional[datetime] = Field(
@@ -217,7 +219,8 @@ class Person(BaseModel):
         description="原始数据，用于调试和追溯"
     )
 
-    @validator('person_id')
+    @field_validator('person_id')
+    @classmethod
     def validate_person_id(cls, v):
         """验证人员ID格式"""
         if not v:
@@ -237,9 +240,9 @@ class Customer(BaseModel):
     """
     
     customer_id: str = Field(
-        ..., 
-        description="统一客户ID，格式: {system}_{original_id}",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        ...,
+        description="统一客户ID格式: {system}_{original_id}",
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     customer_name: str = Field(
@@ -275,9 +278,9 @@ class Customer(BaseModel):
     )
     
     contact_phone: Optional[str] = Field(
-        None, 
+        None,
         description="联系电话",
-        regex=r"^[\d\-\+\(\)\s]+$"
+        pattern=r"^[\d\-\+\(\)\s]+$"
     )
     
     contact_email: Optional[EmailStr] = Field(
@@ -315,7 +318,8 @@ class Customer(BaseModel):
         description="原始数据，用于调试和追溯"
     )
 
-    @validator('customer_id')
+    @field_validator('customer_id')
+    @classmethod
     def validate_customer_id(cls, v):
         """验证客户ID格式"""
         if not v:
@@ -337,7 +341,7 @@ class Transaction(BaseModel):
     tx_id: str = Field(
         ..., 
         description="统一交易ID，格式: {system}_{original_id}",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     transaction_number: Optional[str] = Field(
@@ -370,19 +374,19 @@ class Transaction(BaseModel):
     customer_id: Optional[str] = Field(
         None, 
         description="可选客户ID",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     person_id: Optional[str] = Field(
         None, 
         description="可选人员ID",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     org_id: str = Field(
         ..., 
         description="关联组织ID",
-        regex=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
+        pattern=r"^(erp|hr|fin)_[A-Za-z0-9_-]+$"
     )
     
     description: Optional[str] = Field(
@@ -420,7 +424,8 @@ class Transaction(BaseModel):
         description="原始数据，用于调试和追溯"
     )
 
-    @validator('tx_id')
+    @field_validator('tx_id')
+    @classmethod
     def validate_tx_id(cls, v):
         """验证交易ID格式"""
         if not v:
@@ -430,14 +435,16 @@ class Transaction(BaseModel):
             raise ValueError("交易ID格式错误，应为: {system}_{original_id}")
         return v
 
-    @validator('currency')
+    @field_validator('currency')
+    @classmethod
     def validate_currency(cls, v):
         """验证货币代码"""
         if v != "CNY":
             raise ValueError("目前只支持CNY货币代码")
         return v
 
-    @validator('amount')
+    @field_validator('amount')
+    @classmethod
     def validate_amount(cls, v):
         """验证金额格式"""
         if v < 0:

@@ -240,22 +240,30 @@ class DataMapper:
         if not amount_str or amount_str.lower() in ['none', 'null', '']:
             return Decimal('0.00')
         
+        # 保存原始字符串用于错误检查
+        original_str = amount_str
+        
         # 移除货币符号和空格
         for symbol in DataMapper.CURRENCY_SYMBOLS.keys():
             amount_str = amount_str.replace(symbol, '')
         
         # 移除千分位分隔符和其他非数字字符（保留小数点和负号）
-        amount_str = re.sub(r'[^\d\.\-]', '', amount_str)
+        cleaned_str = re.sub(r'[^\d\.\-]', '', amount_str)
+        
+        # 检查是否包含无效的字母字符（如果清理后的字符串与原始字符串差异太大，可能是无效格式）
+        if re.search(r'[a-zA-Z]', original_str) and not re.search(r'^\s*[\d\.\-\s,¥￥$€£¢]+\s*$', original_str):
+            logger.warning(f"无法解析金额格式: {amount_value}")
+            raise ValueError(f"无效的金额格式: {amount_value}")
         
         # 处理负号位置
-        is_negative = amount_str.count('-') > 0
-        amount_str = amount_str.replace('-', '')
+        is_negative = cleaned_str.count('-') > 0
+        cleaned_str = cleaned_str.replace('-', '')
         
-        if not amount_str:
+        if not cleaned_str:
             return Decimal('0.00')
         
         try:
-            amount = Decimal(amount_str)
+            amount = Decimal(cleaned_str)
             if is_negative:
                 amount = -amount
             return amount.quantize(Decimal('0.01'))
