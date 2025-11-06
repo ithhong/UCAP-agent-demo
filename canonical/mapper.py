@@ -178,8 +178,24 @@ class DataMapper:
         if not date_str or date_str.lower() in ['none', 'null', '']:
             return None
         
-        # 获取该系统的日期格式列表
+        # 优先尝试 ISO 8601 解析（支持空格或T分隔、微秒、时区偏移、尾随Z）
+        iso_candidate = date_str.replace('Z', '+00:00')
+        try:
+            return datetime.fromisoformat(iso_candidate)
+        except Exception:
+            pass
+        
+        # 获取该系统的日期格式列表，并注入微秒支持格式
         formats = DataMapper.DATE_FORMATS.get(system_type, [])
+        if system_type == "erp":
+            # ERP: 常见含微秒的格式
+            formats = ["%Y-%m-%d %H:%M:%S.%f"] + formats
+        elif system_type == "hr":
+            # HR: 可能出现含微秒的时间
+            formats = ["%d/%m/%Y %H:%M:%S.%f"] + formats
+        elif system_type == "fin":
+            # FIN: 可能出现含微秒的时间
+            formats = ["%m-%d-%Y %H:%M:%S.%f"] + formats
         
         # 尝试各种格式解析
         for fmt in formats:
@@ -190,10 +206,13 @@ class DataMapper:
         
         # 如果系统特定格式失败，尝试通用格式
         common_formats = [
+            "%Y-%m-%d %H:%M:%S.%f",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d",
+            "%d/%m/%Y %H:%M:%S.%f",
             "%d/%m/%Y %H:%M:%S", 
             "%d/%m/%Y",
+            "%m-%d-%Y %H:%M:%S.%f",
             "%m-%d-%Y %H:%M:%S",
             "%m-%d-%Y",
             "%Y/%m/%d",
