@@ -1,19 +1,21 @@
 """
-编排层集成测试（骨架）：路由与执行器
+编排层集成测试：路由与执行器
 
 作者: Tom
 创建时间: 2025-11-10T16:39:14+08:00 (Asia/Shanghai)
 
 说明：
-- 本文件为测试用例骨架，涵盖路由与执行器的主要场景。
-- 仅提供形态校验的基本用例，其余用例以 skip 形式占位，后续按开发计划逐步完善。
+- 覆盖路由子集选择、并发执行部分失败、超时触发、过滤参数透传与同系统内去重。
 """
 
 import pytest
+import time
+from datetime import datetime, timedelta
 
 from orchestrator import query_across_systems
 from orchestrator.router import Router
 from orchestrator.executor import Executor
+from canonical.models import SystemType
 
 
 def test_high_level_entry_returns_shape():
@@ -34,54 +36,132 @@ def test_high_level_entry_returns_shape():
     assert isinstance(result["metrics"], dict)
 
 
-@pytest.mark.skip(reason="skeleton: 路由子集与默认路由覆盖，待完善")
 def test_routing_subset_systems():
-    """占位：验证 systems=["erp","fin"] 时仅路由到两系统。"""
+    """验证 systems=["erp","fin"] 时仅路由到两系统；默认路由覆盖三系统。"""
     router = Router()
     routed_all = router.route(filter_params=None, systems=None)
     routed_subset = router.route(filter_params=None, systems=["erp", "fin"]) 
-    # TODO(Tom): 断言 routed_subset["agents"] 的系统键集合为 {"erp","fin"}；routed_all 包含三系统
-    assert isinstance(routed_all["agents"], list)
-    assert isinstance(routed_subset["agents"], list)
+
+    # 默认路由：包含全部三系统
+    set_all = {a.system_type.value for a in routed_all["agents"]}
+    assert set_all == {"erp", "hr", "fin"}
+    assert len(routed_all["agents"]) == 3
+
+    # 子集路由：仅包含指定两系统
+    set_subset = {a.system_type.value for a in routed_subset["agents"]}
+    assert set_subset == {"erp", "fin"}
+    assert len(routed_subset["agents"]) == 2
+    # 无额外告警
+    assert routed_subset.get("warnings", []) == []
 
 
-@pytest.mark.skip(reason="skeleton: 并发执行成功与部分失败，待完善")
 def test_concurrent_execution_partial_failure():
-    """占位：模拟单系统数据源失败，验证部分成功与错误收集。"""
+    """模拟单系统数据源失败，验证部分成功与错误收集与指标统计。"""
     executor = Executor()
     router = Router()
     routed = router.route(filter_params={"entity_type": "organizations"}, systems=None)
-    # TODO(Tom): 暂时不改动 db_path，仅占位；后续通过 monkeypatch/临时配置制造一个 Agent 失败
-    result = executor.execute(routed["agents"], filter_params=routed["filter_params"], timeout_ms=3000)
-    assert isinstance(result, dict)
-    assert "errors" in result and "metrics" in result
+    # 将 FINAgent 的数据源路径改为不存在，触发 DataSourceError
+    fin_agent = next(a for a in routed["agents"] if a.system_type.value == "fin")
+    original_path = fin_agent.db_path
+    try:
+        fin_agent.db_path = "d:/Vsproject/UCAP-agent-demo/data/this_file_should_not_exist.db"
+        result = executor.execute(routed["agents"], filter_params=routed["filter_params"], timeout_ms=3000)
+        # 断言错误被收集，且至少一个系统成功
+        assert isinstance(result, dict)
+        assert "errors" in result and "metrics" in result
+        assert any("查询失败" in e for e in result["errors"])  # 包含失败信息
+        assert result["metrics"]["fail_count"] >= 1
+        assert result["metrics"]["success_count"] >= 1
+        # FIN 的计数应为零，其他系统组织数应大于等于1
+        per_counts = result["metrics"]["per_agent_result_counts"]
+        assert "fin" in per_counts and per_counts["fin"]["organizations"] == 0
+        # 聚合组织应有数据（来自其他成功系统）
+        assert len(result["organizations"]) >= 1
+    finally:
+        fin_agent.db_path = original_path
 
 
-@pytest.mark.skip(reason="skeleton: 超时触发与错误收集，待完善")
-def test_timeout_enforcement():
-    """占位：设置较小的 timeout_ms，验证超时错误被记录且整体结果正常返回。"""
+def test_timeout_enforcement(monkeypatch):
+    """设置较小的 timeout_ms + 注入慢查询，验证超时错误与时长统计。"""
     router = Router()
     routed = router.route(filter_params={"entity_type": "customers"}, systems=None)
     executor = Executor()
-    # TODO(Tom): 使用更小的超时并配合慢查询模拟；当前仅占位调用
-    result = executor.execute(routed["agents"], filter_params=routed["filter_params"], timeout_ms=100)
+    # 选取一个系统注入慢查询（休眠 0.5s），设置超时 100ms
+    slow_agent = next(a for a in routed["agents"] if a.system_type.value == "erp")
+    original_query = slow_agent.query_canonical
+
+    def slow_query(fp=None):
+        time.sleep(0.5)
+        return original_query(fp)
+
+    monkeypatch.setattr(slow_agent, "query_canonical", slow_query, raising=True)
+
+    timeout_ms = 100
+    result = executor.execute(routed["agents"], filter_params=routed["filter_params"], timeout_ms=timeout_ms)
     assert isinstance(result, dict)
     assert "errors" in result
+    assert any("查询超时" in e and f">{timeout_ms}ms" in e for e in result["errors"])  # 包含超时错误
+    # 校验该系统的时长记录被标记为超时值
+    system_key = slow_agent.system_type.value
+    assert result["metrics"]["per_agent_duration_ms"][system_key] == float(timeout_ms)
+    # 其他系统应有客户数据返回（聚合结果至少有数据）
+    assert len(result["customers"]) >= 1
 
 
-@pytest.mark.skip(reason="skeleton: 过滤参数透传与效果验证，待完善")
 def test_filter_params_passthrough_effect():
-    """占位：验证 entity_type/date_from/date_to/limit 透传并生效。"""
-    # TODO(Tom): 使用未来日期保证结果为空集，或使用 limit=1 验证截断；当前占位
-    result = query_across_systems({"entity_type": "persons", "limit": 1})
-    assert isinstance(result, dict)
-    assert "metrics" in result
+    """验证 entity_type/limit/date_from 透传并在编排层生效。"""
+    # 场景1：仅返回人员集合，其他实体为空；各系统人员数不超过1
+    result1 = query_across_systems({"entity_type": "persons", "limit": 1})
+    assert isinstance(result1, dict)
+    assert result1["organizations"] == []
+    assert result1["customers"] == []
+    assert result1["transactions"] == []
+    per_counts1 = result1["metrics"]["per_agent_result_counts"]
+    for sys_key, counts in per_counts1.items():
+        assert counts["persons"] <= 1
+        assert counts["organizations"] == 0
+        assert counts["customers"] == 0
+        assert counts["transactions"] == 0
+
+    # 场景2：未来时间过滤，四类实体均为空
+    future_from = "2031-01-01T00:00:00"
+    result2 = query_across_systems({"date_from": future_from})
+    assert result2["organizations"] == []
+    assert result2["persons"] == []
+    assert result2["customers"] == []
+    assert result2["transactions"] == []
+    for sys_key, counts in result2["metrics"]["per_agent_result_counts"].items():
+        assert counts == {"organizations": 0, "persons": 0, "customers": 0, "transactions": 0}
 
 
-@pytest.mark.skip(reason="skeleton: 同系统内去重策略生效，待完善")
-def test_deduplication_within_system():
-    """占位：在同系统内制造重复主键，验证去重策略生效。"""
-    # TODO(Tom): 通过构造重复数据或重复调用同一系统进行合并；当前占位
-    result = query_across_systems({"entity_type": "organizations"})
+def test_deduplication_within_system(monkeypatch):
+    """在同系统内制造重复主键，验证编排层按主键去重。"""
+    router = Router()
+    routed = router.route(filter_params={"entity_type": "organizations"}, systems=["erp"])  # 仅测试ERP
+    agent = routed["agents"][0]
+
+    # 保存原方法并计算原始计数
+    original_query = agent.query_canonical
+    original_result = original_query(routed["filter_params"])  # 仅organizations有效
+    original_count = len(original_result["organizations"])
+
+    # 注入重复数据：将首个组织再追加一次，形成重复ID
+    def dup_query(fp=None):
+        data = original_query(fp)
+        if data["organizations"]:
+            data = {
+                **data,
+                "organizations": data["organizations"] + [data["organizations"][0]],
+            }
+        return data
+
+    monkeypatch.setattr(agent, "query_canonical", dup_query, raising=True)
+
+    executor = Executor()
+    result = executor.execute(routed["agents"], filter_params=routed["filter_params"], timeout_ms=2000)
     assert isinstance(result, dict)
-    assert "organizations" in result
+    # 编排层去重后，organizations 计数应回到原始计数
+    counts = result["metrics"]["per_agent_result_counts"]["erp"]["organizations"]
+    assert counts == original_count
+    # 聚合后列表长度也应等于原始计数
+    assert len(result["organizations"]) == original_count
