@@ -12,6 +12,7 @@ from loguru import logger
 
 from .router import Router
 from .executor import Executor
+from .llm_proxy import LLMProxy
 
 __version__ = "1.0.0"
 
@@ -61,4 +62,61 @@ def query_across_systems(
     return result
 
 
-__all__ = ["query_across_systems", "__version__"]
+def nl_query(
+    text: str,
+    default_filters: Optional[Dict[str, Any]] = None,
+    systems: Optional[List[str]] = None,
+    timeout_ms: int = 5000,
+) -> Dict[str, Any]:
+    """
+    高层入口：自然语言查询。
+
+    - 使用 LLMProxy 将自然语言解析为 `filter_params` 与可选的 `systems`/`timeout_ms`。
+    - 通过 `query_across_systems` 进行桥接，不影响既有导出与行为。
+    - 支持显式覆盖：若调用方传入 `systems`/`timeout_ms` 参数，则优先使用显式值。
+
+    Args:
+        text: 自然语言查询文本
+        default_filters: 在 LLM 不可用或降级时作为基本过滤参数的兜底
+        systems: 显式指定系统子集（覆盖 LLM 推断值）
+        timeout_ms: 并发执行的超时毫秒数（可被 LLM 推断值覆盖，但范围裁剪到 50..60000）
+
+    Returns:
+        同 `query_across_systems`，但 metrics 中会附加 `llm` 字段记录 LLM 相关指标。
+    """
+    logger.info("Orchestrator: 自然语言查询入口调用")
+
+    proxy = LLMProxy(timeout_ms=2000)
+    inferred = proxy.infer(text=text, default_filters=default_filters)
+
+    inferred_fp = inferred.get("filter_params", {})
+    inferred_sys = inferred.get("systems")
+    inferred_timeout = inferred.get("timeout_ms")
+    llm_warnings = inferred.get("warnings", [])
+    llm_metrics = inferred.get("metrics", {})
+
+    # 选择最终 systems（显式参数优先）
+    final_systems = systems if systems else inferred_sys
+
+    # 选择最终 timeout，并做范围裁剪
+    final_timeout = timeout_ms
+    if isinstance(inferred_timeout, int):
+        final_timeout = max(50, min(60000, inferred_timeout))
+
+    # 桥接到既有入口
+    result = query_across_systems(
+        filter_params=inferred_fp,
+        systems=final_systems,
+        timeout_ms=final_timeout,
+    )
+
+    # 合并告警与指标（保持返回结构不变）
+    warnings = result.get("warnings", [])
+    result["warnings"] = [*warnings, *llm_warnings]
+    metrics = result.get("metrics", {})
+    metrics["llm"] = llm_metrics
+    result["metrics"] = metrics
+    return result
+
+
+__all__ = ["query_across_systems", "nl_query", "__version__"]
