@@ -8,9 +8,13 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from dotenv import load_dotenv
+from pathlib import Path
 
-# 加载环境变量
-load_dotenv()
+# 项目根目录（确保无论从何处运行，都定位到项目根的 .env）
+_ROOT_DIR = Path(__file__).resolve().parents[1]
+
+# 加载环境变量（显式指定项目根 .env，避免因工作目录变化导致加载错误）
+load_dotenv(dotenv_path=_ROOT_DIR / ".env")
 
 
 class Settings(BaseSettings):
@@ -44,7 +48,8 @@ class Settings(BaseSettings):
     fin_data_size: int = Field(default=800, env="FIN_DATA_SIZE")
     
     class Config:
-        env_file = ".env"
+        # 显式指定项目根的 .env 文件
+        env_file = str(_ROOT_DIR / ".env")
         env_file_encoding = "utf-8"
         case_sensitive = False
     

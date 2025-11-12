@@ -106,9 +106,14 @@ class LLMProxy:
                 "Authorization": f"Bearer {settings.dashscope_api_key}",
                 "Content-Type": "application/json",
             }
+            # DashScope 接口要求 input 为 JSON 对象，改为 messages 结构以避免 400 错误
             payload = {
                 "model": get_model_config()["model"],
-                "input": prompt,
+                "input": {
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ]
+                },
                 "parameters": {
                     "max_tokens": get_model_config()["max_tokens"],
                     "temperature": get_model_config()["temperature"],
@@ -126,10 +131,16 @@ class LLMProxy:
 
             data = resp.json()
             # 尝试常见字段获取文本
+            # 兼容不同返回结构：优先 output.text，其次 choices[0].text，再次 output.choices[0].message.content
             raw_text = (
-                data.get("output", {})
-                .get("text", None)
+                data.get("output", {}).get("text", None)
                 or data.get("choices", [{}])[0].get("text")
+                or (
+                    data.get("output", {})
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content")
+                )
             )
             if not raw_text:
                 # 某些版本返回 content 字段

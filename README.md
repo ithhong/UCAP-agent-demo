@@ -49,15 +49,27 @@ pip install -r requirements.txt
 # 复制配置模板
 cp .env.example .env
 
-# 编辑配置文件，设置你的通义千问API密钥
-# DASHSCOPE_API_KEY=your_api_key_here
+# 编辑配置文件，设置你的通义千问API密钥与数据库路径
+# DASHSCOPE_API_KEY=your_dashscope_api_key_here
+# DATABASE_PATH=d:/Vsproject/UCAP-agent-demo/ui/data/ucap_demo.db
 ```
 
 ### 3. 运行应用
 
 ```bash
 # 启动Streamlit应用
-streamlit run ui/main.py
+streamlit run ui/nl_query.py
+
+### 4. 运行目录与路径解析指引
+
+- 相对路径基于“当前工作目录”解析。推荐在项目根目录运行：`streamlit run ui/nl_query.py`。
+- 若从 `ui` 子目录运行，请使用脚本名：`streamlit run nl_query.py`，并确保 `.env` 中的 `DATABASE_PATH` 为绝对路径，避免产生 `ui/ui/data` 等误路径。
+- 修改 `.env` 后需要重启应用以使配置生效（配置在导入阶段加载）。
+ 
+ 重要说明：
+ - `.env` 的加载已固定为“项目根目录”的 `.env` 文件（无论从根目录还是 `ui` 子目录运行，均使用项目根 `.env`），避免工作目录变化导致读取错误配置。
+ - 财务系统（FIN）数据库连接使用 SQLite 只读 URI（`mode=ro`）。若 `DATABASE_PATH` 配置的文件不存在或路径拼写错误，将直接报出只读连接失败或缺表错误，而不会静默创建空库。请根据错误信息修正路径。
+ - 运行时日志会输出以下字段用于定位：`FINAgent 使用数据库路径`、`resolved_uri`、`database_list`（来自 `PRAGMA database_list`）、`fin_tables_present`/`fin_tables_missing`。建议在出现数据源错误时查看日志。
 ```
 
 ## 项目结构
@@ -108,6 +120,16 @@ pytest --cov=. tests/
 - `DEFAULT_MODEL`: 默认使用的模型（qwen-turbo）
 - `DATABASE_PATH`: 数据库文件路径
 - `LOG_LEVEL`: 日志级别
+
+示例（Windows绝对路径推荐）：
+
+```
+DASHSCOPE_API_KEY=your_dashscope_api_key_here
+DATABASE_PATH=d:/Vsproject/UCAP-agent-demo/ui/data/ucap_demo.db
+DEFAULT_MODEL=qwen-turbo
+MAX_TOKENS=2000
+TEMPERATURE=0.7
+```
 
 ## 许可证
 

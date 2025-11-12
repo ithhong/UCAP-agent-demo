@@ -9,6 +9,7 @@ FIN系统Agent
 import sqlite3
 from typing import List, Dict, Any
 from loguru import logger
+from pathlib import Path
 
 from agents.base import BaseAgent, DataSourceError, DataMappingError
 from canonical.models import (
@@ -28,6 +29,7 @@ class FINAgent(BaseAgent):
     def __init__(self):
         super().__init__(system_name="财务系统", system_type=SystemType.FIN)
         self.db_path = self.settings.database_path
+        logger.info(f"FINAgent 使用数据库路径: {self.db_path}")
 
     def pull_raw(self) -> List[Dict[str, Any]]:
         """
@@ -37,7 +39,10 @@ class FINAgent(BaseAgent):
             包含entity标记的原始数据列表
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            # 以只读 URI 方式连接，避免路径拼写错误时静默创建空库
+            resolved = Path(self.db_path).resolve()
+            db_uri = resolved.as_uri() + "?mode=ro"
+            conn = sqlite3.connect(db_uri, uri=True)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -77,14 +82,8 @@ class FINAgent(BaseAgent):
 
             conn.close()
 
-            logger.info(
-                f"FIN原始数据拉取完成: 组织={len(org_rows)}, 人员={len(person_rows)}, 客户={len(cust_rows)}, 交易={len(txn_rows)}"
-            )
-
             return raw
-
         except Exception as e:
-            logger.error(f"FIN数据源访问失败: {e}")
             raise DataSourceError(f"FIN数据源访问失败: {e}")
 
     def map_to_canonical(self, raw_data: List[Dict[str, Any]]) -> Dict[str, List[Any]]:
