@@ -99,7 +99,7 @@ if run:
             ],
         })
         counts_df = counts_df.set_index("entity")
-        st.bar_chart(counts_df, use_container_width=True)
+        st.bar_chart(counts_df, width="stretch")
     except Exception as e:
         st.warning(f"实体计数柱状图绘制失败: {e}")
 
@@ -135,7 +135,7 @@ if run:
                 hist_df = bins.value_counts().sort_index().rename_axis("bin").reset_index(name="count")
                 hist_df = hist_df.set_index("bin")
                 st.caption("交易金额分布（直方图，10 分箱）")
-                st.bar_chart(hist_df, use_container_width=True)
+                st.bar_chart(hist_df, width="stretch")
             else:
                 st.info("暂无可用于分布的交易金额数据")
         except Exception as e:
@@ -152,10 +152,10 @@ if run:
                 agg_cnt = df.groupby("tx_date")["amount"].count().rename("count")
 
                 st.caption("交易金额时间序列（按日总额）")
-                st.line_chart(agg_sum, use_container_width=True)
+                st.line_chart(agg_sum, width="stretch")
 
                 st.caption("交易数量时间序列（按日条数）")
-                st.line_chart(agg_cnt, use_container_width=True)
+                st.line_chart(agg_cnt, width="stretch")
             else:
                 st.info("暂无可用于时间序列的交易数据")
         except Exception as e:
@@ -201,7 +201,7 @@ if run:
                 "latency_ms": st.session_state["llm_latency_history"],
             }).set_index("run")
             st.caption("LLM 延迟（ms）")
-            st.line_chart(lat_df, use_container_width=True)
+            st.line_chart(lat_df, width="stretch")
         else:
             st.info("暂无 LLM 延迟数据")
     except Exception as e:
@@ -213,7 +213,7 @@ if run:
             status_series = pd.Series(st.session_state["llm_status_history"], name="status")
             status_df = status_series.value_counts().rename_axis("status").reset_index(name="count").set_index("status")
             st.caption("LLM 状态分布（used/degraded/bypassed 等）")
-            st.bar_chart(status_df, use_container_width=True)
+            st.bar_chart(status_df, width="stretch")
         else:
             st.info("暂无 LLM 状态分布数据")
     except Exception as e:
