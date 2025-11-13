@@ -17,7 +17,6 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
-import math
 from dateutil.relativedelta import relativedelta
 
 from loguru import logger
@@ -196,15 +195,107 @@ class LLMProxy:
             fp.setdefault("entity_type", "customers")
             fp.setdefault("limit", 50)
 
-        # 解析中文相对时间范围，如：近两年/最近3月/过去一周/近十天
-        # 支持阿拉伯数字与常见中文数字（零一二三四五六七八九十百）
+        # 解析中文固定与相对时间范围
+        # 先匹配固定表达：本周/上周、本月/上月、今年/去年/前年、今天/昨天/前天、本季度/上季度、近半年/近1个季度
+        # 再匹配相对表达：近N年/月/周/天
+        # 注意：仅在缺失时补齐 date_from/date_to，避免覆盖主路径结果
         try:
             now = datetime.now()
+            # 固定表达归一
+            try:
+                # 周起始按“周一”为起点
+                weekday = now.weekday()  # 0=周一
+                start_of_week = now - relativedelta(days=weekday)
+
+                def set_range(df: datetime, dt: datetime, label: str) -> None:
+                    if "date_from" not in fp:
+                        fp["date_from"] = df.isoformat()
+                    if "date_to" not in fp:
+                        fp["date_to"] = dt.isoformat()
+                    warnings.append(f"降级解析固定时间：{label}")
+
+                # 本周：从本周周一到今天
+                if re.search(r"(本周|这周|这一周)", text):
+                    set_range(start_of_week, now, "本周")
+
+                # 上周：从上周周一到上周周日
+                elif re.search(r"(上周|上一周|上星期|上个星期)", text):
+                    start_of_last_week = start_of_week - relativedelta(days=7)
+                    end_of_last_week = start_of_week - relativedelta(days=1)
+                    set_range(start_of_last_week, end_of_last_week, "上周")
+
+                # 本月：从本月1日到今天
+                elif re.search(r"(本月|这个月|当月)", text):
+                    start_of_month = datetime(now.year, now.month, 1)
+                    set_range(start_of_month, now, "本月")
+
+                # 上月：从上月1日到上月最后一天
+                elif re.search(r"(上月|上个月)", text):
+                    start_of_month = datetime(now.year, now.month, 1)
+                    start_of_last_month = start_of_month - relativedelta(months=1)
+                    end_of_last_month = start_of_month - relativedelta(days=1)
+                    set_range(start_of_last_month, end_of_last_month, "上月")
+
+                # 今年：从当年1月1日至今天
+                elif re.search(r"(今年|本年|当年)", text):
+                    start_of_year = datetime(now.year, 1, 1)
+                    set_range(start_of_year, now, "今年")
+
+                # 去年：跨整年
+                elif re.search(r"(去年)", text):
+                    start_last_year = datetime(now.year - 1, 1, 1)
+                    end_last_year = datetime(now.year - 1, 12, 31)
+                    set_range(start_last_year, end_last_year, "去年")
+
+                # 前年：跨整年
+                elif re.search(r"(前年)", text):
+                    start_prev_year = datetime(now.year - 2, 1, 1)
+                    end_prev_year = datetime(now.year - 2, 12, 31)
+                    set_range(start_prev_year, end_prev_year, "前年")
+
+                # 本季度：从当季首日至今天
+                elif re.search(r"(本季度|这个季度|当季)", text):
+                    q_start_month = ((now.month - 1) // 3) * 3 + 1
+                    start_of_quarter = datetime(now.year, q_start_month, 1)
+                    set_range(start_of_quarter, now, "本季度")
+
+                # 上季度：上季完整区间
+                elif re.search(r"(上季度|上一季度|上季)", text):
+                    q_start_month = ((now.month - 1) // 3) * 3 + 1
+                    start_of_quarter = datetime(now.year, q_start_month, 1)
+                    start_of_last_quarter = start_of_quarter - relativedelta(months=3)
+                    end_of_last_quarter = start_of_quarter - relativedelta(days=1)
+                    set_range(start_of_last_quarter, end_of_last_quarter, "上季度")
+
+                # 今天/昨天/前天：单日区间（起止同日）
+                elif re.search(r"(今天|今日|当天)", text):
+                    day = datetime(now.year, now.month, now.day)
+                    set_range(day, day, "今天")
+                elif re.search(r"(昨天|昨日)", text):
+                    day = datetime(now.year, now.month, now.day) - relativedelta(days=1)
+                    set_range(day, day, "昨天")
+                elif re.search(r"(前天)", text):
+                    day = datetime(now.year, now.month, now.day) - relativedelta(days=2)
+                    set_range(day, day, "前天")
+
+                # 近半年：今天减去 6 个月
+                elif re.search(r"(近半年|最近半年|过去半年)", text):
+                    start = now - relativedelta(months=6)
+                    set_range(start, now, "近半年")
+
+                # 近1个季度/近一个季度/近一季：今天减去 3 个月
+                elif re.search(r"(近1个季度|近一个季度|近一季|最近1个季度|过去1个季度)", text):
+                    start = now - relativedelta(months=3)
+                    set_range(start, now, "近一个季度")
+            except Exception:
+                # 固定表达识别失败不影响后续相对解析
+                pass
+
+            # 相对表达：近N年/月/天/周
             num = None
             unit = None
 
             # 优先匹配格式：近|最近|过去 + (中文/阿拉伯数字) + (年|月|天|日|周|星期)
-            import re
             m = re.search(r"(近|最近|过去)([0-9]+|[零一二两三四五六七八九十百]+)(年|月|天|日|周|星期)", text)
             if m:
                 raw_num = m.group(2)
@@ -217,19 +308,19 @@ class LLMProxy:
                         "百": 100
                     }
                     # 简易中文数字到整数，覆盖常见表达：一至十、两、十X、X十、百
-                    if raw_num.isdigit():
-                        return int(raw_num)
+                    if s.isdigit():
+                        return int(s)
                     # 处理“十X”或“X十”
-                    if raw_num.startswith("十") and len(raw_num) > 1:
-                        return 10 + mapping.get(raw_num[1], 0)
-                    if raw_num.endswith("十") and len(raw_num) > 1:
-                        return mapping.get(raw_num[0], 0) * 10
+                    if s.startswith("十") and len(s) > 1:
+                        return 10 + mapping.get(s[1], 0)
+                    if s.endswith("十") and len(s) > 1:
+                        return mapping.get(s[0], 0) * 10
                     # 单字或“十”“百”
-                    if raw_num in mapping:
-                        return mapping[raw_num]
+                    if s in mapping:
+                        return mapping[s]
                     # 逐字累加（如“二三”→23 的情况不常见，保守做逐字相加）
                     total = 0
-                    for ch in raw_num:
+                    for ch in s:
                         total += mapping.get(ch, 0)
                     return max(1, total)
 
@@ -240,7 +331,7 @@ class LLMProxy:
                 m2 = re.search(r"(近|最近|过去)\s*(\d+)\s*(个)?\s*(年|月|天|日|周|星期)", text)
                 if m2:
                     num = int(m2.group(2))
-                    unit = m2.group(3)
+                    unit = m2.group(4)
 
             if num and unit:
                 # 统一 unit
@@ -256,8 +347,10 @@ class LLMProxy:
                     date_from = None
 
                 if date_from:
-                    fp["date_from"] = date_from.isoformat()
-                    fp["date_to"] = now.isoformat()
+                    if "date_from" not in fp:
+                        fp["date_from"] = date_from.isoformat()
+                    if "date_to" not in fp:
+                        fp["date_to"] = now.isoformat()
                     warnings.append(f"降级解析时间范围：{num}{unit}")
         except Exception:
             # 忽略时间解析错误，不影响主流程
