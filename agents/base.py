@@ -237,6 +237,11 @@ class BaseAgent(ABC):
                         date_from = isoparse(str(filters["date_from"]))
                     if filters.get("date_to"):
                         date_to = isoparse(str(filters["date_to"]))
+                    # 统一为 naive datetime 进行比较，避免 aware/naive 类型冲突
+                    if date_from and getattr(date_from, "tzinfo", None) is not None:
+                        date_from = date_from.replace(tzinfo=None)
+                    if date_to and getattr(date_to, "tzinfo", None) is not None:
+                        date_to = date_to.replace(tzinfo=None)
                 except Exception:
                     # 解析失败则保持 None，不做时间过滤
                     date_from = None
@@ -267,6 +272,9 @@ class BaseAgent(ABC):
                         t = get_item_time(it)
                         if t is None:
                             continue
+                        # 若数据项时间为 aware，则转为 naive 以统一比较
+                        if getattr(t, "tzinfo", None) is not None:
+                            t = t.replace(tzinfo=None)
                         if date_from and t < date_from:
                             continue
                         if date_to and t > date_to:
