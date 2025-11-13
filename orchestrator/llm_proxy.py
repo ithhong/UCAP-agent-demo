@@ -412,13 +412,25 @@ class LLMProxy:
             warnings.extend(w_fp)
             warnings.extend(w_sys)
 
-            # 若 LLM 正常解析但缺少关键字段，则按需使用降级解析进行“补齐”，不覆盖已有值
+            # 若 LLM 正常解析但缺少关键字段，则按需使用降级解析进行补齐；
+            # 同时引入“服务端时间锚定纠偏”，当识别到固定/相对时间表达时覆盖 LLM 的时间区间。
             try:
                 fp_fb, sys_fb, w_fb = self._fallback_parse(text, default_filters)
-                # 时间范围补齐（仅在缺失时）
-                for key in ("date_from", "date_to"):
-                    if key not in normalized_fp and isinstance(fp_fb, dict) and fp_fb.get(key):
-                        normalized_fp[key] = fp_fb[key]
+                # 服务端时间锚定纠偏：若识别到固定/相对时间表达，则覆盖 LLM 的 date_from/date_to
+                fallback_has_time = (
+                    isinstance(fp_fb, dict)
+                    and bool(fp_fb.get("date_from"))
+                    and bool(fp_fb.get("date_to"))
+                )
+                if fallback_has_time:
+                    normalized_fp["date_from"] = fp_fb["date_from"]
+                    normalized_fp["date_to"] = fp_fb["date_to"]
+                    warnings.append("LLM 时间感知纠偏：覆盖 LLM 时间区间为服务端计算值")
+                else:
+                    # 时间范围补齐（仅在缺失时）
+                    for key in ("date_from", "date_to"):
+                        if key not in normalized_fp and isinstance(fp_fb, dict) and fp_fb.get(key):
+                            normalized_fp[key] = fp_fb[key]
                 # 实体类型补齐（仅在缺失时）
                 if "entity_type" not in normalized_fp and isinstance(fp_fb, dict) and fp_fb.get("entity_type"):
                     normalized_fp["entity_type"] = fp_fb["entity_type"]
