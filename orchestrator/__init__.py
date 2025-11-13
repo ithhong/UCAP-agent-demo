@@ -103,6 +103,11 @@ def nl_query(
     if isinstance(inferred_timeout, int):
         final_timeout = max(50, min(60000, inferred_timeout))
 
+    # 打印最终参数，便于核对不同自然语言查询的差异
+    logger.info(
+        f"Orchestrator: 最终参数确认 filter_params={inferred_fp}, systems={final_systems}, timeout_ms={final_timeout}"
+    )
+
     # 桥接到既有入口
     result = query_across_systems(
         filter_params=inferred_fp,

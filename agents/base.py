@@ -8,6 +8,7 @@ BaseAgent抽象类
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from dateutil.parser import isoparse
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Union, Type
 import hashlib
@@ -107,6 +108,7 @@ class BaseAgent(ABC):
     @abstractmethod
     def map_to_canonical(self, raw_data: List[Dict[str, Any]]) -> Dict[str, List[BaseModel]]:
         """
+        @abstractmethod：抽象方法，具体实现由子类实现
         映射到标准模型
         
         Args:
@@ -225,19 +227,52 @@ class BaseAgent(ABC):
                 filtered_items = []
             
             # 日期范围过滤
-            if filtered_items and filters.get("date_from"):
-                date_from = datetime.fromisoformat(filters["date_from"])
-                filtered_items = [
-                    item for item in filtered_items 
-                    if hasattr(item, 'created_at') and item.created_at >= date_from
-                ]
-            
-            if filtered_items and filters.get("date_to"):
-                date_to = datetime.fromisoformat(filters["date_to"])
-                filtered_items = [
-                    item for item in filtered_items 
-                    if hasattr(item, 'created_at') and item.created_at <= date_to
-                ]
+            # 注意：不同实体的时间语义不同，优先使用域字段，其次回退到 created_at
+            if filtered_items and (filters.get("date_from") or filters.get("date_to")):
+                # 解析为更兼容的 ISO8601（支持Z后缀）
+                date_from = None
+                date_to = None
+                try:
+                    if filters.get("date_from"):
+                        date_from = isoparse(str(filters["date_from"]))
+                    if filters.get("date_to"):
+                        date_to = isoparse(str(filters["date_to"]))
+                except Exception:
+                    # 解析失败则保持 None，不做时间过滤
+                    date_from = None
+                    date_to = None
+
+                # 记录一次过滤信息，便于定位问题
+                time_field = "hire_date" if entity_type == "persons" else ("tx_date" if entity_type == "transactions" else "created_at")
+                logger.debug(
+                    f"{self.system_name} 时间过滤生效: entity_type={entity_type}, time_field={time_field}, date_from={date_from}, date_to={date_to}"
+                )
+
+                def get_item_time(it: BaseModel) -> Optional[datetime]:
+                    try:
+                        if entity_type == "persons" and hasattr(it, "hire_date") and getattr(it, "hire_date"):
+                            return getattr(it, "hire_date")
+                        if entity_type == "transactions" and hasattr(it, "tx_date") and getattr(it, "tx_date"):
+                            return getattr(it, "tx_date")
+                        # organizations/customers 或无域时间时回退
+                        if hasattr(it, "created_at") and getattr(it, "created_at"):
+                            return getattr(it, "created_at")
+                    except Exception:
+                        return None
+                    return None
+
+                if date_from or date_to:
+                    tmp: List[BaseModel] = []
+                    for it in filtered_items:
+                        t = get_item_time(it)
+                        if t is None:
+                            continue
+                        if date_from and t < date_from:
+                            continue
+                        if date_to and t > date_to:
+                            continue
+                        tmp.append(it)
+                    filtered_items = tmp
             
             # 数量限制
             if filtered_items and filters.get("limit"):

@@ -16,6 +16,9 @@ import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+import math
+from dateutil.relativedelta import relativedelta
 
 from loguru import logger
 
@@ -188,6 +191,73 @@ class LLMProxy:
             fp.setdefault("entity_type", "customers")
             fp.setdefault("limit", 50)
 
+        # 解析中文相对时间范围，如：近两年/最近3月/过去一周/近十天
+        # 支持阿拉伯数字与常见中文数字（零一二三四五六七八九十百）
+        try:
+            now = datetime.now()
+            num = None
+            unit = None
+
+            # 优先匹配格式：近|最近|过去 + (中文/阿拉伯数字) + (年|月|天|日|周|星期)
+            import re
+            m = re.search(r"(近|最近|过去)([0-9]+|[零一二两三四五六七八九十百]+)(年|月|天|日|周|星期)", text)
+            if m:
+                raw_num = m.group(2)
+                unit = m.group(3)
+
+                def chinese_to_int(s: str) -> int:
+                    mapping = {
+                        "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+                        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+                        "百": 100
+                    }
+                    # 简易中文数字到整数，覆盖常见表达：一至十、两、十X、X十、百
+                    if raw_num.isdigit():
+                        return int(raw_num)
+                    # 处理“十X”或“X十”
+                    if raw_num.startswith("十") and len(raw_num) > 1:
+                        return 10 + mapping.get(raw_num[1], 0)
+                    if raw_num.endswith("十") and len(raw_num) > 1:
+                        return mapping.get(raw_num[0], 0) * 10
+                    # 单字或“十”“百”
+                    if raw_num in mapping:
+                        return mapping[raw_num]
+                    # 逐字累加（如“二三”→23 的情况不常见，保守做逐字相加）
+                    total = 0
+                    for ch in raw_num:
+                        total += mapping.get(ch, 0)
+                    return max(1, total)
+
+                num = chinese_to_int(raw_num)
+
+            # 次要匹配："近3个月" 等英文形式
+            if not num or not unit:
+                m2 = re.search(r"(近|最近|过去)\s*(\d+)\s*(个)?\s*(年|月|天|日|周|星期)", text)
+                if m2:
+                    num = int(m2.group(2))
+                    unit = m2.group(3)
+
+            if num and unit:
+                # 统一 unit
+                if unit in ("年",):
+                    date_from = now - relativedelta(years=num)
+                elif unit in ("月",):
+                    date_from = now - relativedelta(months=num)
+                elif unit in ("天", "日"):
+                    date_from = now - relativedelta(days=num)
+                elif unit in ("周", "星期"):
+                    date_from = now - relativedelta(weeks=num)
+                else:
+                    date_from = None
+
+                if date_from:
+                    fp["date_from"] = date_from.isoformat()
+                    fp["date_to"] = now.isoformat()
+                    warnings.append(f"降级解析时间范围：{num}{unit}")
+        except Exception:
+            # 忽略时间解析错误，不影响主流程
+            pass
+
         return fp, s, warnings
 
     def infer(self, text: str, default_filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -243,6 +313,25 @@ class LLMProxy:
             normalized_sys, w_sys = router.validate_systems(systems_raw)
             warnings.extend(w_fp)
             warnings.extend(w_sys)
+
+            # 若 LLM 正常解析但缺少关键字段，则按需使用降级解析进行“补齐”，不覆盖已有值
+            try:
+                fp_fb, sys_fb, w_fb = self._fallback_parse(text, default_filters)
+                # 时间范围补齐（仅在缺失时）
+                for key in ("date_from", "date_to"):
+                    if key not in normalized_fp and isinstance(fp_fb, dict) and fp_fb.get(key):
+                        normalized_fp[key] = fp_fb[key]
+                # 实体类型补齐（仅在缺失时）
+                if "entity_type" not in normalized_fp and isinstance(fp_fb, dict) and fp_fb.get("entity_type"):
+                    normalized_fp["entity_type"] = fp_fb["entity_type"]
+                # 系统集合补齐（仅在缺失时）
+                if not normalized_sys and sys_fb:
+                    normalized_sys = sys_fb
+                if w_fb:
+                    warnings.extend(w_fb)
+            except Exception:
+                # 补齐失败不影响主路径
+                pass
 
             result: Dict[str, Any] = {
                 "filter_params": normalized_fp,
