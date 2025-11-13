@@ -80,15 +80,20 @@ class LLMProxy:
         self.timeout_ms = timeout_ms
 
     def _compose_prompt(self, text: str) -> str:
-        """构造提示词，要求按 JSON Schema 输出工具参数。"""
+        """构造提示词，要求按 JSON Schema 输出工具参数，并强化时间字段输出约束。"""
         schema_str = json.dumps(FILTER_PARAMS_JSON_SCHEMA, ensure_ascii=False)
         supported_systems = ", ".join(SUPPORTED_SYSTEMS.keys())
         return (
             "你是一名企业数据协作助手，需要为一个跨系统查询工具生成 JSON 参数。"\
-            "\n只输出一个 JSON 对象，不要包含多余文字。"\
+            "\n只输出一个 JSON 对象，不要包含多余文字。禁止输出解释性文本或代码块标记。"\
             "\n支持的系统: " + supported_systems +
             "\nfilter_params 的 JSON Schema 如下（其它未知键允许保留）：\n" + schema_str +
-            "\n可选地，你也可以在同一 JSON 中提供 'systems' 字段（数组，元素取自支持的系统）和 'timeout_ms'（整数，50..60000）。"\
+            "\n请严格遵守以下约束："\
+            "\n1) 当用户文本包含任何时间含义时，必须在 'filter_params' 中给出 'date_from' 与 'date_to'，并使用 ISO8601 字符串（如 '2024-01-01T00:00:00Z' 或 '2024-01-01'）。"\
+            "\n2) 对中文相对时间表达进行归一：例如 '近N年/近N月/近N周/近N天/最近N…/过去N…/近两年/近两月/近3个月/近1个星期'，转换为区间：'date_to=今天'，'date_from=今天减去对应跨度'。"\
+            "\n3) 若无法确定时间，请不要输出 'date_from' 或 'date_to' 这两个键，以便后续组件自动补齐；禁止输出 null。"\
+            "\n4) 'systems'（如有）只能取自支持的系统集合；'timeout_ms'（如有）为 50..60000 的整数。"\
+            "\n只返回一个 JSON，如：{\"filter_params\":{...},\"systems\":[...],\"timeout_ms\":1234}。"\
             "\n用户需求：" + text
         )
 
