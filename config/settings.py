@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     
     # 通义千问API配置
     dashscope_api_key: str = Field(..., env="DASHSCOPE_API_KEY")
-    default_model: str = Field(default="qwen-turbo", env="DEFAULT_MODEL")
+    default_model: str = Field(default="qwen3-flash", env="DEFAULT_MODEL")
     max_tokens: int = Field(default=2000, env="MAX_TOKENS")
     temperature: float = Field(default=0.7, env="TEMPERATURE")
     
@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     erp_data_size: int = Field(default=1000, env="ERP_DATA_SIZE")
     hr_data_size: int = Field(default=500, env="HR_DATA_SIZE")
     fin_data_size: int = Field(default=800, env="FIN_DATA_SIZE")
+
+    # 时间增强开关
+    enable_time_enhancements: bool = Field(default=True, env="ENABLE_TIME_ENHANCEMENTS")
+    enable_narrow_time_llm: bool = Field(default=True, env="ENABLE_NARROW_TIME_LLM")
     
     class Config:
         # 显式指定项目根的 .env 文件

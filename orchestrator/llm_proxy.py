@@ -175,6 +175,57 @@ class LLMProxy:
             logger.error(f"LLMProxy: 调用失败/超时：{e}")
             return None, None
 
+    def _compose_prompt_time_narrow(self, text: str) -> str:
+        """构造窄域时间抽取提示词，仅输出时间区间。"""
+        now_iso = datetime.now().isoformat()
+        return (
+            "请只输出一个 JSON 对象，格式为 {\"date_from\":\"...\",\"date_to\":\"...\"}。"\
+            f"\n当前时间（ISO8601，作为相对时间的锚点）：{now_iso}"\
+            "\n规则：\n- 周起始为周一；\n- 相对时间如近N年/月/周/天/季度，以当前时间为终点并向前回溯；\n- 今天/昨天/前天为单日区间；\n- 本周/本月/本季度起点为各自然周期起点；上周/上月/上季度为完整周期。"\
+            "\n若无法确定时间，请不要输出任何键。"\
+            "\n用户输入：" + text
+        )
+
+    def _extract_time_narrow(self, text: str) -> Tuple[Optional[Dict[str, str]], int]:
+        """窄域时间抽取：调用 LLM 仅提取时间区间。
+
+        返回 (time_fp, latency_ms)。time_fp 为包含 date_from/date_to 的字典，若无法解析则为 None。
+        """
+        prompt = self._compose_prompt_time_narrow(text)
+        start = time.time()
+        parsed, raw_text = self._call_llm(prompt)
+        latency_ms = int((time.time() - start) * 1000)
+
+        def pick_dates(obj: Dict[str, Any]) -> Optional[Dict[str, str]]:
+            if not isinstance(obj, dict):
+                return None
+            # 兼容直接输出或嵌套在 filter_params 内的两种形态
+            if obj.get("date_from") and obj.get("date_to"):
+                return {"date_from": str(obj.get("date_from")), "date_to": str(obj.get("date_to"))}
+            fp = obj.get("filter_params") if isinstance(obj.get("filter_params"), dict) else None
+            if fp and fp.get("date_from") and fp.get("date_to"):
+                return {"date_from": str(fp.get("date_from")), "date_to": str(fp.get("date_to"))}
+            return None
+
+        if parsed:
+            picked = pick_dates(parsed)
+            if picked:
+                return picked, latency_ms
+
+        # 尝试从原始文本中提取 JSON
+        if isinstance(raw_text, str):
+            try:
+                m = re.search(r"\{[\s\S]*\}", raw_text)
+                if m:
+                    obj = json.loads(m.group(0))
+                    picked = pick_dates(obj)
+                    if picked:
+                        return picked, latency_ms
+            except Exception:
+                pass
+
+        return None, latency_ms
+
     def _fallback_parse(self, text: str, default_filters: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[List[str]], List[str]]:
         """基于关键词的简单降级解析。仅用于 LLM 不可用或响应不可解析时。"""
         warnings: List[str] = ["LLM 降级：使用关键词规则推断参数"]
@@ -378,6 +429,10 @@ class LLMProxy:
         warnings: List[str] = []
         llm_used = parsed is not None
         llm_status = "ok" if parsed is not None else "degraded"
+        time_narrow_used: bool = False
+        time_narrow_latency_ms: int = 0
+        time_anchor_override_used: bool = False
+        time_anchor_latency_ms: int = 0
 
         if not parsed:
             # 降级
@@ -388,6 +443,21 @@ class LLMProxy:
             normalized_sys, w_sys = router.validate_systems(s)
             warnings.extend(w_fp)
             warnings.extend(w_sys)
+            # 若依然缺失时间且开启窄域提取，则调用窄域 LLM 进行补齐
+            if settings.enable_time_enhancements and settings.enable_narrow_time_llm:
+                missing_from = not normalized_fp.get("date_from")
+                missing_to = not normalized_fp.get("date_to")
+                if missing_from or missing_to:
+                    picked, latency_ms2 = self._extract_time_narrow(text)
+                    time_narrow_latency_ms = latency_ms2
+                    if picked and picked.get("date_from") and picked.get("date_to"):
+                        normalized_fp["date_from"] = picked["date_from"]
+                        normalized_fp["date_to"] = picked["date_to"]
+                        time_narrow_used = True
+                        warnings.append("Narrow 时间抽取触发：主/降级路径均缺失时间，采用窄域 LLM 提取")
+                        logger.info(
+                            f"LLMProxy: 窄域时间提取触发（降级路径），区间 {picked['date_from']}..{picked['date_to']}，耗时 {latency_ms2}ms"
+                        )
             return {
                 "filter_params": normalized_fp,
                 "systems": normalized_sys,
@@ -397,6 +467,10 @@ class LLMProxy:
                     "llm_status": llm_status,
                     "llm_latency_ms": latency_ms,
                     "llm_model": get_model_config()["model"],
+                    "time_narrow_used": time_narrow_used,
+                    "time_narrow_latency_ms": time_narrow_latency_ms,
+                    "time_anchor_override_used": time_anchor_override_used,
+                    "time_anchor_latency_ms": time_anchor_latency_ms,
                 },
             }
 
@@ -415,17 +489,31 @@ class LLMProxy:
             # 若 LLM 正常解析但缺少关键字段，则按需使用降级解析进行补齐；
             # 同时引入“服务端时间锚定纠偏”，当识别到固定/相对时间表达时覆盖 LLM 的时间区间。
             try:
+                _fb_start = time.time()
                 fp_fb, sys_fb, w_fb = self._fallback_parse(text, default_filters)
-                # 服务端时间锚定纠偏：若识别到固定/相对时间表达，则覆盖 LLM 的 date_from/date_to
+                time_anchor_latency_ms = int((time.time() - _fb_start) * 1000)
+                # 服务端时间锚定纠偏：若识别到固定/相对时间表达
                 fallback_has_time = (
                     isinstance(fp_fb, dict)
                     and bool(fp_fb.get("date_from"))
                     and bool(fp_fb.get("date_to"))
                 )
                 if fallback_has_time:
-                    normalized_fp["date_from"] = fp_fb["date_from"]
-                    normalized_fp["date_to"] = fp_fb["date_to"]
-                    warnings.append("LLM 时间感知纠偏：覆盖 LLM 时间区间为服务端计算值")
+                    if settings.enable_time_enhancements:
+                        # 总开关开启：覆盖 LLM 的 date_from/date_to
+                        normalized_fp["date_from"] = fp_fb["date_from"]
+                        normalized_fp["date_to"] = fp_fb["date_to"]
+                        time_anchor_override_used = True
+                        warnings.append("LLM 时间感知纠偏：覆盖 LLM 时间区间为服务端计算值")
+                        logger.warning(
+                            f"LLMProxy: 时间锚定纠偏触发，覆盖为 {fp_fb['date_from']}..{fp_fb['date_to']}，fallback耗时 {time_anchor_latency_ms}ms"
+                        )
+                    else:
+                        # 总开关关闭：仅在缺失时补齐，不覆盖已有值
+                        for key in ("date_from", "date_to"):
+                            if key not in normalized_fp and fp_fb.get(key):
+                                normalized_fp[key] = fp_fb[key]
+                                warnings.append("LLM 时间感知纠偏关闭：仅补齐缺失的时间字段")
                 else:
                     # 时间范围补齐（仅在缺失时）
                     for key in ("date_from", "date_to"):
@@ -443,6 +531,22 @@ class LLMProxy:
                 # 补齐失败不影响主路径
                 pass
 
+            # 若依然缺失时间且开启窄域提取，则调用窄域 LLM 进行补齐
+            if settings.enable_time_enhancements and settings.enable_narrow_time_llm:
+                missing_from = not normalized_fp.get("date_from")
+                missing_to = not normalized_fp.get("date_to")
+                if missing_from or missing_to:
+                    picked, latency_ms2 = self._extract_time_narrow(text)
+                    time_narrow_latency_ms = latency_ms2
+                    if picked and picked.get("date_from") and picked.get("date_to"):
+                        normalized_fp["date_from"] = picked["date_from"]
+                        normalized_fp["date_to"] = picked["date_to"]
+                        time_narrow_used = True
+                        warnings.append("Narrow 时间抽取触发：主/降级路径均缺失时间，采用窄域 LLM 提取")
+                        logger.info(
+                            f"LLMProxy: 窄域时间提取触发（主路径补齐），区间 {picked['date_from']}..{picked['date_to']}，耗时 {latency_ms2}ms"
+                        )
+
             result: Dict[str, Any] = {
                 "filter_params": normalized_fp,
                 "systems": normalized_sys,
@@ -452,6 +556,10 @@ class LLMProxy:
                     "llm_status": llm_status,
                     "llm_latency_ms": latency_ms,
                     "llm_model": get_model_config()["model"],
+                    "time_narrow_used": time_narrow_used,
+                    "time_narrow_latency_ms": time_narrow_latency_ms,
+                    "time_anchor_override_used": time_anchor_override_used,
+                    "time_anchor_latency_ms": time_anchor_latency_ms,
                 },
             }
 
@@ -477,6 +585,10 @@ class LLMProxy:
                     "llm_status": "degraded",
                     "llm_latency_ms": latency_ms,
                     "llm_model": get_model_config()["model"],
+                    "time_narrow_used": time_narrow_used,
+                    "time_narrow_latency_ms": time_narrow_latency_ms,
+                    "time_anchor_override_used": time_anchor_override_used,
+                    "time_anchor_latency_ms": time_anchor_latency_ms,
                 },
             }
 
