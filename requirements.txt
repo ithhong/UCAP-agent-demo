@@ -2,6 +2,7 @@
 streamlit>=1.28.0
 pydantic>=2.0.0
 fastapi>=0.104.0
+uvicorn>=0.23.0
 
 # 数据处理
 pandas>=2.0.0
@@ -14,6 +15,7 @@ dashscope>=1.14.0
 # 测试框架
 pytest>=7.4.0
 pytest-cov>=4.1.0
+httpx>=0.24.0
 
 # 工具库
 python-dotenv>=1.0.0

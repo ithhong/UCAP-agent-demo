@@ -7,15 +7,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, APIRouter
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from orchestrator import nl_query, query_across_systems
-from api.schemas import NLQueryRequest, QueryRequest, QueryResponse
+from api.schemas import NLQueryRequest, QueryRequest, QueryResponse, ApiResponse
 
 
 app = FastAPI(title="UCAP API", version="1.0.0")
+router = APIRouter(prefix="/api")
 
 
 def _to_dict(item: Any) -> Any:
@@ -34,34 +35,44 @@ def _serialize_list(items: List[Any]) -> List[Dict[str, Any]]:
 
 @app.exception_handler(RequestValidationError)
 def validation_exception_handler(request: Request, exc: RequestValidationError):
-    payload = {
-        "organizations": [],
-        "persons": [],
-        "customers": [],
-        "transactions": [],
-        "warnings": [],
-        "errors": ["Invalid request", str(exc.errors())],
-        "metrics": {"api": {"status": "invalid_request"}},
-    }
-    return JSONResponse(status_code=422, content=payload)
+    wrapped = ApiResponse(
+        code=1001,
+        message="Invalid request",
+        success=False,
+        data=QueryResponse(
+            organizations=[],
+            persons=[],
+            customers=[],
+            transactions=[],
+            warnings=[],
+            errors=["Invalid request", str(exc.errors())],
+            metrics={"api": {"status": "invalid_request"}},
+        ),
+    )
+    return JSONResponse(status_code=422, content=wrapped.model_dump())
 
 
 @app.exception_handler(Exception)
 def general_exception_handler(request: Request, exc: Exception):
-    payload = {
-        "organizations": [],
-        "persons": [],
-        "customers": [],
-        "transactions": [],
-        "warnings": [],
-        "errors": [str(exc)],
-        "metrics": {"api": {"status": "error"}},
-    }
-    return JSONResponse(status_code=400, content=payload)
+    wrapped = ApiResponse(
+        code=1002,
+        message="Error",
+        success=False,
+        data=QueryResponse(
+            organizations=[],
+            persons=[],
+            customers=[],
+            transactions=[],
+            warnings=[],
+            errors=[str(exc)],
+            metrics={"api": {"status": "error"}},
+        ),
+    )
+    return JSONResponse(status_code=400, content=wrapped.model_dump())
 
 
-@app.post("/nl-query", response_model=QueryResponse)
-def nl_query_endpoint(req: NLQueryRequest) -> QueryResponse:
+@router.post("/nl-query", response_model=ApiResponse)
+def nl_query_endpoint(req: NLQueryRequest) -> ApiResponse:
     start = perf_counter()
     fp = req.default_filters.model_dump() if req.default_filters else None
     result = nl_query(
@@ -83,7 +94,11 @@ def nl_query_endpoint(req: NLQueryRequest) -> QueryResponse:
     persons = _serialize_list(result.get("persons", []))
     customers = _serialize_list(result.get("customers", []))
     txs = _serialize_list(result.get("transactions", []))
-    return QueryResponse(
+    metrics["executionTime"] = metrics.get("api", {}).get("duration_ms")
+    metrics["resultCount"] = len(orgs) + len(persons) + len(customers) + len(txs)
+    par = metrics.get("per_agent_result_counts")
+    metrics["systemCount"] = (len(par.keys()) if isinstance(par, dict) else (len(req.systems) if req.systems else None))
+    data = QueryResponse(
         organizations=orgs,
         persons=persons,
         customers=customers,
@@ -92,10 +107,11 @@ def nl_query_endpoint(req: NLQueryRequest) -> QueryResponse:
         errors=result.get("errors", []),
         metrics=metrics,
     )
+    return ApiResponse(code=0, message="OK", success=True, data=data)
 
 
-@app.post("/query", response_model=QueryResponse)
-def query_endpoint(req: QueryRequest) -> QueryResponse:
+@router.post("/query", response_model=ApiResponse)
+def query_endpoint(req: QueryRequest) -> ApiResponse:
     start = perf_counter()
     fp = req.filter_params.model_dump() if req.filter_params else None
     result = query_across_systems(
@@ -116,7 +132,11 @@ def query_endpoint(req: QueryRequest) -> QueryResponse:
     persons = _serialize_list(result.get("persons", []))
     customers = _serialize_list(result.get("customers", []))
     txs = _serialize_list(result.get("transactions", []))
-    return QueryResponse(
+    metrics["executionTime"] = metrics.get("api", {}).get("duration_ms")
+    metrics["resultCount"] = len(orgs) + len(persons) + len(customers) + len(txs)
+    par = metrics.get("per_agent_result_counts")
+    metrics["systemCount"] = (len(par.keys()) if isinstance(par, dict) else (len(req.systems) if req.systems else None))
+    data = QueryResponse(
         organizations=orgs,
         persons=persons,
         customers=customers,
@@ -125,3 +145,6 @@ def query_endpoint(req: QueryRequest) -> QueryResponse:
         errors=result.get("errors", []),
         metrics=metrics,
     )
+    return ApiResponse(code=0, message="OK", success=True, data=data)
+
+app.include_router(router)
