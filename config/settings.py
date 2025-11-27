@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # 时间增强开关
     enable_time_enhancements: bool = Field(default=True, env="ENABLE_TIME_ENHANCEMENTS")
     enable_narrow_time_llm: bool = Field(default=True, env="ENABLE_NARROW_TIME_LLM")
+
+    # 缓存与Redis配置
+    cache_ttl_seconds: int = Field(default=300, env="CACHE_TTL_SECONDS")
+    cache_maxsize: int = Field(default=128, env="CACHE_MAXSIZE")
+    enable_redis_cache: bool = Field(default=True, env="ENABLE_REDIS_CACHE")
+    redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
     
     class Config:
         # 显式指定项目根的 .env 文件
