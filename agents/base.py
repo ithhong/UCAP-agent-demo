@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional, Union, Type
 import hashlib
 import json
 from loguru import logger
+import random
 
 from canonical.models import (
     Organization, Person, Customer, Transaction, 
@@ -21,6 +22,7 @@ from canonical.models import (
 )
 from canonical.mapper import DataMapper
 from config.settings import get_settings
+from config.redis_client import get_redis_client, redis_get, redis_set
 
 
 class AgentError(Exception):
@@ -193,15 +195,73 @@ class BaseAgent(ABC):
             AgentError: 查询失败
         """
         try:
-            cache_key = self._generate_cache_key(filter_params)
-            canonical_data = self._cached_query(cache_key)
-            
-            # 应用过滤条件
+            rc = get_redis_client()
+            ex_ttl = getattr(self.settings, "cache_ttl_seconds", self.cache_ttl)
+            bucket = int(datetime.now().timestamp() // ex_ttl)
+            rkey = f"ucap:canonical:v1:{self.system_type.value}:{bucket}"
+
+            canonical_data: Dict[str, List[BaseModel]] = {}
+
+            if rc is not None:
+                raw = redis_get(rkey)
+                if isinstance(raw, str) and raw:
+                    try:
+                        obj = json.loads(raw)
+                        canonical_data = {
+                            "organizations": [Organization(**d) for d in obj.get("organizations", [])],
+                            "persons": [Person(**d) for d in obj.get("persons", [])],
+                            "customers": [Customer(**d) for d in obj.get("customers", [])],
+                            "transactions": [Transaction(**d) for d in obj.get("transactions", [])],
+                        }
+                    except Exception:
+                        canonical_data = {}
+                if not canonical_data:
+                    lock = rc.lock(f"ucap:lock:canonical:v1:{self.system_type.value}:{bucket}", timeout=ex_ttl, blocking=True, blocking_timeout=2)
+                    acquired = False
+                    try:
+                        acquired = lock.acquire(blocking=True, blocking_timeout=2)
+                    except Exception:
+                        acquired = False
+                    try:
+                        raw2 = redis_get(rkey)
+                        if isinstance(raw2, str) and raw2:
+                            try:
+                                obj2 = json.loads(raw2)
+                                canonical_data = {
+                                    "organizations": [Organization(**d) for d in obj2.get("organizations", [])],
+                                    "persons": [Person(**d) for d in obj2.get("persons", [])],
+                                    "customers": [Customer(**d) for d in obj2.get("customers", [])],
+                                    "transactions": [Transaction(**d) for d in obj2.get("transactions", [])],
+                                }
+                            except Exception:
+                                canonical_data = {}
+                        if not canonical_data:
+                            cache_key = self._generate_cache_key(filter_params)
+                            canonical_data = self._cached_query(cache_key)
+                            try:
+                                payload = {
+                                    "organizations": [x.model_dump() for x in canonical_data.get("organizations", [])],
+                                    "persons": [x.model_dump() for x in canonical_data.get("persons", [])],
+                                    "customers": [x.model_dump() for x in canonical_data.get("customers", [])],
+                                    "transactions": [x.model_dump() for x in canonical_data.get("transactions", [])],
+                                }
+                                jitter = int(ex_ttl * (0.9 + random.random() * 0.2))
+                                redis_set(rkey, json.dumps(payload), ex=jitter)
+                            except Exception:
+                                pass
+                    finally:
+                        if acquired:
+                            try:
+                                lock.release()
+                            except Exception:
+                                pass
+            else:
+                cache_key = self._generate_cache_key(filter_params)
+                canonical_data = self._cached_query(cache_key)
+
             if filter_params:
                 canonical_data = self._apply_filters(canonical_data, filter_params)
-            
             return canonical_data
-            
         except Exception as e:
             logger.error(f"{self.system_name} 查询失败: {str(e)}")
             raise
