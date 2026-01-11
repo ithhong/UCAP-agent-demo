@@ -8,6 +8,7 @@ BaseAgent抽象类
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from time import perf_counter
 from dateutil.parser import isoparse
 from functools import lru_cache
 from typing import List, Dict, Any, Optional, Union, Type
@@ -83,6 +84,7 @@ class BaseAgent(ABC):
         self._setup_logger()
         
         logger.info(f"{self.system_name} Agent初始化完成")
+        self._last_cache_metrics: Dict[str, Any] = {}
     
     def _setup_logger(self) -> None:
         """设置专用日志器"""
@@ -195,6 +197,14 @@ class BaseAgent(ABC):
             AgentError: 查询失败
         """
         try:
+            metrics: Dict[str, Any] = {
+                "cache.redis_hits": 0,
+                "cache.redis_misses": 0,
+                "cache.redis_latency_ms": 0.0,
+                "cache.lock_acquired": 0,
+                "cache.lock_contended": 0,
+                "cache.lru_hits": 0,
+            }
             rc = get_redis_client()
             ex_ttl = getattr(self.settings, "cache_ttl_seconds", self.cache_ttl)
             bucket = int(datetime.now().timestamp() // ex_ttl)
@@ -203,7 +213,10 @@ class BaseAgent(ABC):
             canonical_data: Dict[str, List[BaseModel]] = {}
 
             if rc is not None:
+                t0 = perf_counter()
                 raw = redis_get(rkey)
+                t1 = perf_counter()
+                metrics["cache.redis_latency_ms"] += (t1 - t0) * 1000.0
                 if isinstance(raw, str) and raw:
                     try:
                         obj = json.loads(raw)
@@ -213,17 +226,26 @@ class BaseAgent(ABC):
                             "customers": [Customer(**d) for d in obj.get("customers", [])],
                             "transactions": [Transaction(**d) for d in obj.get("transactions", [])],
                         }
+                        metrics["cache.redis_hits"] += 1
                     except Exception:
                         canonical_data = {}
                 if not canonical_data:
+                    metrics["cache.redis_misses"] += 1
                     lock = rc.lock(f"ucap:lock:canonical:v1:{self.system_type.value}:{bucket}", timeout=ex_ttl, blocking=True, blocking_timeout=2)
                     acquired = False
                     try:
                         acquired = lock.acquire(blocking=True, blocking_timeout=2)
                     except Exception:
                         acquired = False
+                    if acquired:
+                        metrics["cache.lock_acquired"] += 1
+                    else:
+                        metrics["cache.lock_contended"] += 1
                     try:
+                        t2 = perf_counter()
                         raw2 = redis_get(rkey)
+                        t3 = perf_counter()
+                        metrics["cache.redis_latency_ms"] += (t3 - t2) * 1000.0
                         if isinstance(raw2, str) and raw2:
                             try:
                                 obj2 = json.loads(raw2)
@@ -233,11 +255,20 @@ class BaseAgent(ABC):
                                     "customers": [Customer(**d) for d in obj2.get("customers", [])],
                                     "transactions": [Transaction(**d) for d in obj2.get("transactions", [])],
                                 }
+                                metrics["cache.redis_hits"] += 1
                             except Exception:
                                 canonical_data = {}
                         if not canonical_data:
                             cache_key = self._generate_cache_key(filter_params)
+                            before = getattr(self._cached_query, "cache_info", lambda: None)()
                             canonical_data = self._cached_query(cache_key)
+                            after = getattr(self._cached_query, "cache_info", lambda: None)()
+                            try:
+                                if before and after:
+                                    dh = max(0, after.hits - before.hits)
+                                    metrics["cache.lru_hits"] += dh
+                            except Exception:
+                                pass
                             try:
                                 payload = {
                                     "organizations": [x.model_dump() for x in canonical_data.get("organizations", [])],
@@ -246,7 +277,10 @@ class BaseAgent(ABC):
                                     "transactions": [x.model_dump() for x in canonical_data.get("transactions", [])],
                                 }
                                 jitter = int(ex_ttl * (0.9 + random.random() * 0.2))
+                                t4 = perf_counter()
                                 redis_set(rkey, json.dumps(payload), ex=jitter)
+                                t5 = perf_counter()
+                                metrics["cache.redis_latency_ms"] += (t5 - t4) * 1000.0
                             except Exception:
                                 pass
                     finally:
@@ -257,10 +291,19 @@ class BaseAgent(ABC):
                                 pass
             else:
                 cache_key = self._generate_cache_key(filter_params)
+                before = getattr(self._cached_query, "cache_info", lambda: None)()
                 canonical_data = self._cached_query(cache_key)
+                after = getattr(self._cached_query, "cache_info", lambda: None)()
+                try:
+                    if before and after:
+                        dh = max(0, after.hits - before.hits)
+                        metrics["cache.lru_hits"] += dh
+                except Exception:
+                    pass
 
             if filter_params:
                 canonical_data = self._apply_filters(canonical_data, filter_params)
+            self._last_cache_metrics = metrics
             return canonical_data
         except Exception as e:
             logger.error(f"{self.system_name} 查询失败: {str(e)}")
@@ -455,9 +498,21 @@ class BaseAgent(ABC):
         }
     
     def clear_cache(self) -> None:
-        """清空缓存"""
         self._cached_query.cache_clear()
+        try:
+            from config.redis_client import redis_scan_delete
+            ex_ttl = getattr(self.settings, "cache_ttl_seconds", self.cache_ttl)
+            _ = ex_ttl
+            p1 = f"ucap:canonical:v1:{self.system_type.value}:*"
+            p2 = f"ucap:lock:canonical:v1:{self.system_type.value}:*"
+            redis_scan_delete(p1)
+            redis_scan_delete(p2)
+        except Exception:
+            pass
         logger.info(f"{self.system_name} 缓存已清空")
+
+    def get_cache_metrics(self) -> Dict[str, Any]:
+        return dict(self._last_cache_metrics or {})
     
     def get_cache_info(self) -> Dict[str, Any]:
         """

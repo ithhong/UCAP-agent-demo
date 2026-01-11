@@ -132,6 +132,7 @@ class Executor:
         errors: List[str] = []
         per_agent_duration_ms: Dict[str, float] = {}
         per_agent_result_counts: Dict[str, Dict[str, int]] = {}
+        per_agent_cache_metrics: Dict[str, Dict[str, Any]] = {}
         success_count = 0
         fail_count = 0
 
@@ -149,6 +150,10 @@ class Executor:
                 system, data, err, dur_ms, counts = fut.result()
                 per_agent_duration_ms[system] = dur_ms
                 per_agent_result_counts[system] = counts
+                try:
+                    per_agent_cache_metrics[system] = agent.get_cache_metrics()
+                except Exception:
+                    per_agent_cache_metrics[system] = {}
                 if err is None and data is not None:
                     # 跨系统只做拼接
                     aggregated["organizations"].extend(data.get("organizations", []))
@@ -176,6 +181,7 @@ class Executor:
                     "customers": 0,
                     "transactions": 0,
                 }
+                per_agent_cache_metrics[system] = {}
                 fail_count += 1
 
         total_duration_ms = (perf_counter() - overall_start) * 1000.0
@@ -183,6 +189,30 @@ class Executor:
             f"Executor: 并发执行完成，总耗时 {total_duration_ms:.2f}ms，"
             f"成功 {success_count}，失败 {fail_count}"
         )
+
+        # 聚合缓存指标总计
+        totals: Dict[str, Any] = {}
+        keys = [
+            "cache.redis_hits",
+            "cache.redis_misses",
+            "cache.redis_latency_ms",
+            "cache.lock_acquired",
+            "cache.lock_contended",
+            "cache.lru_hits",
+        ]
+        for k in keys:
+            vals = []
+            for cm in per_agent_cache_metrics.values():
+                v = cm.get(k)
+                if isinstance(v, (int, float)):
+                    vals.append(v)
+            if vals:
+                if k.endswith("latency_ms"):
+                    totals[k] = sum(vals) / max(1, len(vals))
+                else:
+                    totals[k] = sum(vals)
+            else:
+                totals[k] = 0
 
         return {
             "organizations": aggregated["organizations"],
@@ -193,6 +223,8 @@ class Executor:
             "metrics": {
                 "per_agent_duration_ms": per_agent_duration_ms,
                 "per_agent_result_counts": per_agent_result_counts,
+                "per_agent_cache_metrics": per_agent_cache_metrics,
+                "cache_totals": totals,
                 "success_count": success_count,
                 "fail_count": fail_count,
                 "total_duration_ms": total_duration_ms,

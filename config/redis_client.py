@@ -68,3 +68,20 @@ def redis_delete(key: str) -> int:
     except Exception as e:
         logger.warning(f"Redis DEL failed: {e}")
         return 0
+
+
+def redis_scan_delete(pattern: str) -> int:
+    c = get_redis_client()
+    if c is None:
+        return 0
+    deleted = 0
+    try:
+        for k in c.scan_iter(match=pattern, count=1000):
+            try:
+                c.delete(k)
+                deleted += 1
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Redis SCAN/DEL failed: {e}")
+    return deleted

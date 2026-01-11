@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  ucap-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=${APP_NAME:-UCAP-Agent-Demo}
+      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-qwen3-flash}
+      - MAX_TOKENS=${MAX_TOKENS:-2000}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - ENABLE_REDIS_CACHE=${ENABLE_REDIS_CACHE:-false}
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_PATH=/app/data/ucap_demo.db
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
