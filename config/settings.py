@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     
     # 数据库配置
     database_path: str = Field(default="./data/ucap_demo.db", env="DATABASE_PATH")
+    db_backend: str = Field(default="sqlite", env="DB_BACKEND")
+    database_url: Optional[str] = Field(default=None, env="DATABASE_URL")
     
     # 日志配置
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

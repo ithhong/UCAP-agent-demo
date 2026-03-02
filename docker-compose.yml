@@ -9,6 +9,8 @@ services:
       - APP_VERSION=${APP_VERSION:-1.0.0}
       - DEBUG=${DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - DATABASE_URL=${DATABASE_URL}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-qwen3-flash}
       - MAX_TOKENS=${MAX_TOKENS:-2000}
@@ -20,6 +22,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
+    depends_on:
+      - postgres
   redis:
     image: redis:7-alpine
     container_name: ucap-redis
@@ -29,5 +33,18 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+  postgres:
+    image: postgres:15-alpine
+    container_name: ucap-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-ucap}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ucap_pwd}
+      - POSTGRES_DB=${POSTGRES_DB:-ucap_demo}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
 volumes:
   redis-data:
+  pg-data:

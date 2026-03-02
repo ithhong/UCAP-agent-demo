@@ -7,6 +7,7 @@ uvicorn>=0.23.0
 # 数据处理
 pandas>=2.0.0
 # sqlite3 is a built-in Python library
+psycopg[binary]>=3.1.18
 
 # LLM集成
 requests>=2.31.0

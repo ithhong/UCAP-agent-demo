@@ -6,10 +6,8 @@ FIN系统Agent
 创建时间: 2025-11-06T17:35:20+08:00
 """
 
-import sqlite3
 from typing import List, Dict, Any
 from loguru import logger
-from pathlib import Path
 
 from agents.base import BaseAgent, DataSourceError, DataMappingError
 from canonical.models import (
@@ -17,6 +15,7 @@ from canonical.models import (
     SystemType
 )
 from canonical.mapper import DataMapper
+from config.db_adapter import open_conn_and_cursor, close_conn
 
 
 class FINAgent(BaseAgent):
@@ -39,12 +38,7 @@ class FINAgent(BaseAgent):
             包含entity标记的原始数据列表
         """
         try:
-            # 以只读 URI 方式连接，避免路径拼写错误时静默创建空库
-            resolved = Path(self.db_path).resolve()
-            db_uri = resolved.as_uri() + "?mode=ro"
-            conn = sqlite3.connect(db_uri, uri=True)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            conn, cursor = open_conn_and_cursor(read_only=True)
 
             raw: List[Dict[str, Any]] = []
 
@@ -80,7 +74,7 @@ class FINAgent(BaseAgent):
                 item["_entity"] = "transaction"
                 raw.append(item)
 
-            conn.close()
+            close_conn(conn, cursor)
 
             return raw
         except Exception as e:

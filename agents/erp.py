@@ -6,7 +6,6 @@ ERPAgent实现
 创建时间: 2025-11-05T23:21:13+08:00
 """
 
-import sqlite3
 from typing import List, Dict, Any
 from loguru import logger
 
@@ -16,6 +15,7 @@ from canonical.models import (
     SystemType, StatusType
 )
 from canonical.mapper import DataMapper
+from config.db_adapter import open_conn_and_cursor, close_conn
 
 
 class ERPAgent(BaseAgent):
@@ -37,9 +37,7 @@ class ERPAgent(BaseAgent):
             包含entity标记的原始数据列表
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            conn, cursor = open_conn_and_cursor(read_only=True)
 
             raw: List[Dict[str, Any]] = []
 
@@ -75,7 +73,7 @@ class ERPAgent(BaseAgent):
                 item["_entity"] = "transaction"
                 raw.append(item)
 
-            conn.close()
+            close_conn(conn, cursor)
 
             logger.info(
                 f"ERP原始数据拉取完成: 组织={len(org_rows)}, 人员={len(person_rows)}, 客户={len(cust_rows)}, 交易={len(txn_rows)}"

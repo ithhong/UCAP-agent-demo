@@ -10,6 +10,7 @@ from typing import Dict, Any
 from loguru import logger
 
 from config.settings import get_settings
+from config.db_adapter import open_conn_and_cursor, close_conn
 from data.erp_data_generator import ERPDataGenerator
 from data.hr_data_generator import HRDataGenerator
 from data.fin_data_generator import FINDataGenerator
@@ -76,7 +77,6 @@ class DatabaseInitializer:
         """
         logger.info("开始初始化数据库...")
         
-        # 创建数据库目录
         self.create_database_directory()
         
         # 备份现有数据库
@@ -98,35 +98,41 @@ class DatabaseInitializer:
                 "start_time": datetime.now(),
                 "systems": {}
             }
-            
-            # 1. 创建ERP系统数据
-            logger.info("开始生成ERP系统数据...")
-            erp_result = self.erp_generator.generate_and_save_data()
-            results["systems"]["ERP"] = erp_result
-            logger.info(f"ERP数据生成完成: {erp_result}")
-            
-            # 2. 创建HR系统数据
-            logger.info("开始生成HR系统数据...")
-            hr_result = self.hr_generator.generate_and_save_data()
-            results["systems"]["HR"] = hr_result
-            logger.info(f"HR数据生成完成: {hr_result}")
-            
-            # 3. 创建FIN系统数据
-            logger.info("开始生成FIN系统数据...")
-            fin_result = self.fin_generator.generate_and_save_data()
-            results["systems"]["FIN"] = fin_result
-            logger.info(f"FIN数据生成完成: {fin_result}")
-            
-            # 4. 创建系统元数据表
-            self._create_metadata_table()
-            
-            results["end_time"] = datetime.now()
-            results["duration"] = (results["end_time"] - results["start_time"]).total_seconds()
-            
-            self._insert_system_metadata(results)
-            
-            logger.info(f"数据库初始化完成，耗时: {results['duration']:.2f}秒")
-            return results
+            if str(settings.db_backend).lower() != "postgres":
+                logger.info("开始生成ERP系统数据...")
+                erp_result = self.erp_generator.generate_and_save_data()
+                results["systems"]["ERP"] = erp_result
+                logger.info(f"ERP数据生成完成: {erp_result}")
+                logger.info("开始生成HR系统数据...")
+                hr_result = self.hr_generator.generate_and_save_data()
+                results["systems"]["HR"] = hr_result
+                logger.info(f"HR数据生成完成: {hr_result}")
+                logger.info("开始生成FIN系统数据...")
+                fin_result = self.fin_generator.generate_and_save_data()
+                results["systems"]["FIN"] = fin_result
+                logger.info(f"FIN数据生成完成: {fin_result}")
+                self._create_metadata_table()
+                results["end_time"] = datetime.now()
+                results["duration"] = (results["end_time"] - results["start_time"]).total_seconds()
+                self._insert_system_metadata(results)
+                logger.info(f"数据库初始化完成，耗时: {results['duration']:.2f}秒")
+                return results
+            else:
+                pg_url = settings.database_url
+                if not pg_url:
+                    raise RuntimeError("DATABASE_URL 未配置")
+                if not self.check_database_exists():
+                    erp_result = self.erp_generator.generate_and_save_data()
+                    results["systems"]["ERP"] = erp_result
+                    hr_result = self.hr_generator.generate_and_save_data()
+                    results["systems"]["HR"] = hr_result
+                    fin_result = self.fin_generator.generate_and_save_data()
+                    results["systems"]["FIN"] = fin_result
+                self._migrate_sqlite_to_postgres(results)
+                results["end_time"] = datetime.now()
+                results["duration"] = (results["end_time"] - results["start_time"]).total_seconds()
+                logger.info(f"Postgres 初始化完成，耗时: {results['duration']:.2f}秒")
+                return results
             
         except Exception as e:
             logger.error(f"数据库初始化失败: {e}")
@@ -172,6 +178,63 @@ class DatabaseInitializer:
         
         conn.commit()
         conn.close()
+    
+    def _pg_create_table(self, table_name: str, sample_row: Dict[str, Any]) -> None:
+        conn, cur = open_conn_and_cursor(read_only=False)
+        try:
+            defs = []
+            for k, v in sample_row.items():
+                if isinstance(v, int):
+                    t = "INTEGER"
+                elif isinstance(v, float):
+                    t = "DOUBLE PRECISION"
+                elif isinstance(v, datetime):
+                    t = "TIMESTAMP"
+                else:
+                    t = "TEXT"
+                defs.append(f"{k} {t}")
+            sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(defs)})"
+            cur.execute(sql)
+            conn.commit()
+        finally:
+            close_conn(conn, cur)
+    
+    def _pg_copy_rows(self, table_name: str, rows: List[Dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        conn, cur = open_conn_and_cursor(read_only=False)
+        try:
+            cols = list(rows[0].keys())
+            placeholders = ", ".join(["%s"] * len(cols))
+            sql = f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders})"
+            values = []
+            for r in rows:
+                values.append([r.get(c) for c in cols])
+            cur.executemany(sql, values)
+            conn.commit()
+            return len(values)
+        finally:
+            close_conn(conn, cur)
+    
+    def _migrate_sqlite_to_postgres(self, results: Dict[str, Any]) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        try:
+            tables = [
+                "erp_organizations","erp_persons","erp_customers","erp_transactions",
+                "hr_organizations","hr_persons","hr_customers","hr_transactions",
+                "fin_organizations","fin_persons","fin_customers","fin_transactions"
+            ]
+            for t in tables:
+                cur.execute(f"SELECT * FROM {t}")
+                rows = cur.fetchall()
+                dict_rows = [dict(r) for r in rows]
+                if dict_rows:
+                    self._pg_create_table(t, dict_rows[0])
+                    _ = self._pg_copy_rows(t, dict_rows)
+        finally:
+            conn.close()
     
     def _insert_system_metadata(self, results: Dict[str, Any]):
         """插入系统元数据"""
