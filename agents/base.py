@@ -18,8 +18,8 @@ from loguru import logger
 import random
 
 from canonical.models import (
-    Organization, Person, Customer, Transaction, 
-    SystemType, BaseModel
+    Organization, Person, Customer, Transaction,
+    SystemType, BaseModel, AgentCapability, SkillDefinition
 )
 from canonical.mapper import DataMapper
 from config.settings import get_settings
@@ -496,6 +496,35 @@ class BaseAgent(ABC):
                 }
             }
         }
+
+    def get_capability(self) -> AgentCapability:
+        tool = self.tools()
+        output_schema = {
+            "type": "object",
+            "properties": {
+                "organizations": Organization.model_json_schema(),
+                "persons": Person.model_json_schema(),
+                "customers": Customer.model_json_schema(),
+                "transactions": Transaction.model_json_schema()
+            }
+        }
+        skill = SkillDefinition(
+            skill_id=tool.get("name"),
+            name=tool.get("name"),
+            description=tool.get("description", ""),
+            version="v1",
+            input_schema=tool.get("parameters", {}),
+            output_schema=output_schema,
+            tags=[self.system_type.value]
+        )
+        return AgentCapability(
+            system_name=self.system_name,
+            system_type=self.system_type,
+            agent_version=self.agent_version,
+            canonical_version=self.canonical_version,
+            supported_entities=list(output_schema["properties"].keys()),
+            skills=[skill]
+        )
     
     def clear_cache(self) -> None:
         self._cached_query.cache_clear()

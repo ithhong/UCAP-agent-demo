@@ -27,6 +27,8 @@ SUPPORTED_SYSTEMS: Dict[str, type] = {
     "fin": FINAgent,
 }
 
+CAPABILITY_REGISTRY: Dict[str, type] = dict(SUPPORTED_SYSTEMS)
+
 # 支持的实体类型（与 BaseAgent.filter 语义对齐）
 SUPPORTED_ENTITY_TYPES: List[str] = [
     "organizations",
@@ -164,4 +166,27 @@ class Router:
         }
 
 
-__all__ = ["Router", "SUPPORTED_SYSTEMS", "SUPPORTED_ENTITY_TYPES"]
+def register_capability(system_key: str, agent_cls: type) -> None:
+    key = (system_key or "").strip().lower()
+    if not key:
+        return
+    CAPABILITY_REGISTRY[key] = agent_cls
+    SUPPORTED_SYSTEMS[key] = agent_cls
+
+
+def discover_capabilities(systems: Optional[List[str]] = None) -> Dict[str, Any]:
+    router = Router()
+    system_keys, warnings = router.validate_systems(systems)
+    agents: List[BaseAgent] = [CAPABILITY_REGISTRY[s]() for s in system_keys]
+    capabilities = [agent.get_capability().model_dump() for agent in agents]
+    return {"capabilities": capabilities, "warnings": warnings}
+
+
+__all__ = [
+    "Router",
+    "SUPPORTED_SYSTEMS",
+    "SUPPORTED_ENTITY_TYPES",
+    "CAPABILITY_REGISTRY",
+    "register_capability",
+    "discover_capabilities",
+]

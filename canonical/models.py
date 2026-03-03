@@ -455,6 +455,25 @@ class Transaction(BaseModel):
         return v
 
 
+class SkillDefinition(BaseModel):
+    skill_id: str = Field(..., description="能力唯一标识")
+    name: str = Field(..., description="能力名称")
+    description: str = Field(..., description="能力描述")
+    version: str = Field(default="v1", description="能力版本")
+    input_schema: Dict[str, Any] = Field(default_factory=dict, description="输入契约Schema")
+    output_schema: Dict[str, Any] = Field(default_factory=dict, description="输出契约Schema")
+    tags: Optional[List[str]] = Field(default=None, description="能力标签")
+
+
+class AgentCapability(BaseModel):
+    system_name: str = Field(..., description="系统名称")
+    system_type: SystemType = Field(..., description="系统类型")
+    agent_version: str = Field(..., description="Agent版本")
+    canonical_version: str = Field(..., description="Canonical版本")
+    supported_entities: List[str] = Field(default_factory=list, description="支持的实体类型")
+    skills: List[SkillDefinition] = Field(default_factory=list, description="能力列表")
+
+
 class CanonicalDataSummary(BaseModel):
     """
     Canonical数据汇总模型
@@ -494,5 +513,7 @@ __all__ = [
     "Person", 
     "Customer",
     "Transaction",
+    "SkillDefinition",
+    "AgentCapability",
     "CanonicalDataSummary"
 ]

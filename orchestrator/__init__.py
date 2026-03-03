@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from .router import Router
+from .router import Router, discover_capabilities
 from .executor import Executor
 from .llm_proxy import LLMProxy
 
@@ -124,4 +124,4 @@ def nl_query(
     return result
 
 
-__all__ = ["query_across_systems", "nl_query", "__version__"]
+__all__ = ["query_across_systems", "nl_query", "discover_capabilities", "__version__"]
