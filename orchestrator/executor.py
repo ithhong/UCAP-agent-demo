@@ -18,6 +18,7 @@ from time import perf_counter
 from loguru import logger
 
 from agents.base import BaseAgent, AgentError, DataSourceError, DataMappingError
+from canonical.models import ErrorSpec
 
 
 class Executor:
@@ -51,7 +52,7 @@ class Executor:
 
     def _safe_query(
         self, agent: BaseAgent, filter_params: Optional[Dict[str, Any]]
-    ) -> Tuple[str, Optional[Dict[str, List[Any]]], Optional[str], float, Dict[str, int]]:
+    ) -> Tuple[str, Optional[Dict[str, List[Any]]], Optional[str], float, Dict[str, int], Optional[str]]:
         """
         包装每个 Agent 的查询，返回 (system_key, result, error_msg, duration_ms, counts)。
         counts 为每个实体列表的长度统计。
@@ -80,18 +81,71 @@ class Executor:
                 f"Executor: 系统 {system} 查询成功，用时 {duration_ms:.2f}ms，"
                 f"数量 org={counts['organizations']} person={counts['persons']} cust={counts['customers']} tx={counts['transactions']}"
             )
-            return system, deduped, None, duration_ms, counts
+            return system, deduped, None, duration_ms, counts, None
 
         except (DataSourceError, DataMappingError, AgentError) as e:
             duration_ms = (perf_counter() - start) * 1000.0
             msg = f"{agent.system_name} 查询失败: {str(e)}"
             logger.error(msg)
-            return system, None, msg, duration_ms, {"organizations": 0, "persons": 0, "customers": 0, "transactions": 0}
+            error_class = "agent"
+            if isinstance(e, DataSourceError):
+                error_class = "data_source"
+            elif isinstance(e, DataMappingError):
+                error_class = "data_mapping"
+            return system, None, msg, duration_ms, {"organizations": 0, "persons": 0, "customers": 0, "transactions": 0}, error_class
         except Exception as e:
             duration_ms = (perf_counter() - start) * 1000.0
             msg = f"{agent.system_name} 未预期异常: {str(e)}"
             logger.exception(msg)
-            return system, None, msg, duration_ms, {"organizations": 0, "persons": 0, "customers": 0, "transactions": 0}
+            return system, None, msg, duration_ms, {"organizations": 0, "persons": 0, "customers": 0, "transactions": 0}, "unknown"
+
+    def _build_error_spec(
+        self,
+        error_class: str,
+        message: str,
+        system: str,
+        entity_type: Optional[str],
+    ) -> ErrorSpec:
+        code_map = {
+            "data_source": "E-DATASOURCE",
+            "data_mapping": "E-DATAMAP",
+            "agent": "E-AGENT",
+            "timeout": "E-TIMEOUT",
+            "unknown": "E-UNKNOWN",
+        }
+        severity_map = {
+            "data_source": "critical",
+            "data_mapping": "degraded",
+            "agent": "degraded",
+            "timeout": "degraded",
+            "unknown": "critical",
+        }
+        retryable_map = {
+            "data_source": True,
+            "data_mapping": False,
+            "agent": True,
+            "timeout": True,
+            "unknown": False,
+        }
+        fallback_map = {
+            "data_source": "partial",
+            "data_mapping": "partial",
+            "agent": "partial",
+            "timeout": "partial",
+            "unknown": "none",
+        }
+        blast_radius = [entity_type] if entity_type else ["organizations", "persons", "customers", "transactions"]
+        return ErrorSpec(
+            error_code=code_map.get(error_class, "E-UNKNOWN"),
+            error_class=error_class,
+            severity=severity_map.get(error_class, "warning"),
+            retryable=retryable_map.get(error_class, False),
+            fallback_strategy=fallback_map.get(error_class, "none"),
+            blast_radius=blast_radius,
+            message=message,
+            system=system,
+            entity_type=entity_type,
+        )
 
     def execute(
         self,
@@ -130,6 +184,7 @@ class Executor:
             "transactions": [],
         }
         errors: List[str] = []
+        error_details: List[Dict[str, Any]] = []
         per_agent_duration_ms: Dict[str, float] = {}
         per_agent_result_counts: Dict[str, Dict[str, int]] = {}
         per_agent_cache_metrics: Dict[str, Dict[str, Any]] = {}
@@ -147,7 +202,7 @@ class Executor:
             # 处理已完成任务
             for fut in done:
                 agent = future_map[fut]
-                system, data, err, dur_ms, counts = fut.result()
+                system, data, err, dur_ms, counts, err_class = fut.result()
                 per_agent_duration_ms[system] = dur_ms
                 per_agent_result_counts[system] = counts
                 try:
@@ -163,6 +218,14 @@ class Executor:
                     success_count += 1
                 else:
                     errors.append(err or f"{agent.system_name} 未知错误")
+                    error_details.append(
+                        self._build_error_spec(
+                            err_class or "unknown",
+                            err or f"{agent.system_name} 未知错误",
+                            system,
+                            filter_params.get("entity_type") if isinstance(filter_params, dict) else None,
+                        ).model_dump()
+                    )
                     fail_count += 1
 
             # 处理超时任务
@@ -174,6 +237,14 @@ class Executor:
                 msg = f"{agent.system_name} 查询超时（>{timeout_ms}ms）"
                 logger.warning(msg)
                 errors.append(msg)
+                error_details.append(
+                    self._build_error_spec(
+                        "timeout",
+                        msg,
+                        system,
+                        filter_params.get("entity_type") if isinstance(filter_params, dict) else None,
+                    ).model_dump()
+                )
                 per_agent_duration_ms[system] = float(timeout_ms)
                 per_agent_result_counts[system] = {
                     "organizations": 0,
@@ -214,12 +285,27 @@ class Executor:
             else:
                 totals[k] = 0
 
+        error_class_counts: Dict[str, int] = {}
+        severity_counts: Dict[str, int] = {}
+        retryable_count = 0
+        for item in error_details:
+            ec = item.get("error_class") or "unknown"
+            sv = item.get("severity") or "warning"
+            error_class_counts[ec] = error_class_counts.get(ec, 0) + 1
+            severity_counts[sv] = severity_counts.get(sv, 0) + 1
+            if item.get("retryable") is True:
+                retryable_count += 1
+        total_errors = len(error_details)
+        total_agents = max(1, success_count + fail_count)
+        error_rate = total_errors / total_agents
+
         return {
             "organizations": aggregated["organizations"],
             "persons": aggregated["persons"],
             "customers": aggregated["customers"],
             "transactions": aggregated["transactions"],
             "errors": errors,
+            "error_details": error_details,
             "metrics": {
                 "per_agent_duration_ms": per_agent_duration_ms,
                 "per_agent_result_counts": per_agent_result_counts,
@@ -228,6 +314,13 @@ class Executor:
                 "success_count": success_count,
                 "fail_count": fail_count,
                 "total_duration_ms": total_duration_ms,
+                "error_budget": {
+                    "total_errors": total_errors,
+                    "error_rate": error_rate,
+                    "error_class_counts": error_class_counts,
+                    "severity_counts": severity_counts,
+                    "retryable_count": retryable_count,
+                },
             },
         }
 

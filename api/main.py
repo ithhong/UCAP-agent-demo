@@ -46,6 +46,7 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
             transactions=[],
             warnings=[],
             errors=["Invalid request", str(exc.errors())],
+            error_details=[],
             metrics={"api": {"status": "invalid_request"}},
         ),
     )
@@ -65,6 +66,7 @@ def general_exception_handler(request: Request, exc: Exception):
             transactions=[],
             warnings=[],
             errors=[str(exc)],
+            error_details=[],
             metrics={"api": {"status": "error"}},
         ),
     )
@@ -105,6 +107,7 @@ def nl_query_endpoint(req: NLQueryRequest) -> ApiResponse:
         transactions=txs,
         warnings=result.get("warnings", []),
         errors=result.get("errors", []),
+        error_details=result.get("error_details", []),
         metrics=metrics,
     )
     return ApiResponse(code=0, message="OK", success=True, data=data)
@@ -143,6 +146,7 @@ def query_endpoint(req: QueryRequest) -> ApiResponse:
         transactions=txs,
         warnings=result.get("warnings", []),
         errors=result.get("errors", []),
+        error_details=result.get("error_details", []),
         metrics=metrics,
     )
     return ApiResponse(code=0, message="OK", success=True, data=data)

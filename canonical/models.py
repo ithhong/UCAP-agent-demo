@@ -474,6 +474,18 @@ class AgentCapability(BaseModel):
     skills: List[SkillDefinition] = Field(default_factory=list, description="能力列表")
 
 
+class ErrorSpec(BaseModel):
+    error_code: str = Field(..., description="统一错误编码")
+    error_class: str = Field(..., description="错误分类")
+    severity: str = Field(..., description="错误等级")
+    retryable: bool = Field(default=False, description="是否可重试")
+    fallback_strategy: str = Field(default="none", description="降级策略")
+    blast_radius: List[str] = Field(default_factory=list, description="影响范围")
+    message: str = Field(default="", description="错误信息")
+    system: Optional[str] = Field(default=None, description="系统标识")
+    entity_type: Optional[str] = Field(default=None, description="实体类型")
+
+
 class CanonicalDataSummary(BaseModel):
     """
     Canonical数据汇总模型
@@ -515,5 +527,6 @@ __all__ = [
     "Transaction",
     "SkillDefinition",
     "AgentCapability",
+    "ErrorSpec",
     "CanonicalDataSummary"
 ]

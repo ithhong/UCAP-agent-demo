@@ -6,7 +6,9 @@
 创建时间: 2025-11-10T16:17:02+08:00 (Asia/Shanghai)
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
+import json
+import os
 
 from loguru import logger
 
@@ -124,4 +126,151 @@ def nl_query(
     return result
 
 
-__all__ = ["query_across_systems", "nl_query", "discover_capabilities", "__version__"]
+def _normalize_type(value: Any) -> Optional[Tuple[str, ...]]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return tuple(sorted(str(v) for v in value))
+    return (str(value),)
+
+
+def _schema_props(schema: Any) -> Tuple[Dict[str, Any], Set[str]]:
+    if not isinstance(schema, dict):
+        return {}, set()
+    if schema.get("type") != "object":
+        return {}, set()
+    props = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    return props, required
+
+
+def _compare_enum(path: str, base_schema: Dict[str, Any], curr_schema: Dict[str, Any], breaking: List[str], compatible: List[str]) -> None:
+    base_enum = base_schema.get("enum")
+    curr_enum = curr_schema.get("enum")
+    if isinstance(curr_enum, list) and not isinstance(base_enum, list):
+        breaking.append(f"{path}:enum_added")
+        return
+    if isinstance(base_enum, list) and not isinstance(curr_enum, list):
+        compatible.append(f"{path}:enum_removed")
+        return
+    if isinstance(base_enum, list) and isinstance(curr_enum, list):
+        base_set = set(base_enum)
+        curr_set = set(curr_enum)
+        if not base_set.issubset(curr_set):
+            breaking.append(f"{path}:enum_restricted")
+        elif curr_set != base_set:
+            compatible.append(f"{path}:enum_extended")
+
+
+def _compare_schema(path: str, base_schema: Any, curr_schema: Any, breaking: List[str], compatible: List[str]) -> None:
+    if not isinstance(base_schema, dict) or not isinstance(curr_schema, dict):
+        return
+    base_type = _normalize_type(base_schema.get("type"))
+    curr_type = _normalize_type(curr_schema.get("type"))
+    if base_type and curr_type and base_type != curr_type:
+        breaking.append(f"{path}:type_changed")
+        return
+    _compare_enum(path, base_schema, curr_schema, breaking, compatible)
+    if base_schema.get("type") == "array":
+        _compare_schema(f"{path}[]", base_schema.get("items", {}), curr_schema.get("items", {}), breaking, compatible)
+        return
+    base_props, base_req = _schema_props(base_schema)
+    curr_props, curr_req = _schema_props(curr_schema)
+    for key in base_props:
+        if key not in curr_props:
+            breaking.append(f"{path}.{key}:removed")
+        else:
+            _compare_schema(f"{path}.{key}", base_props[key], curr_props[key], breaking, compatible)
+    for key in curr_props:
+        if key not in base_props:
+            if key in curr_req:
+                breaking.append(f"{path}.{key}:required_added")
+            else:
+                compatible.append(f"{path}.{key}:added")
+    for key in curr_req - base_req:
+        if key in curr_props:
+            breaking.append(f"{path}.{key}:required_added")
+    for key in base_req - curr_req:
+        if key in base_props:
+            compatible.append(f"{path}.{key}:required_removed")
+
+
+def _normalize_capabilities(capabilities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for cap in capabilities:
+        cap = dict(cap or {})
+        skills = cap.get("skills") or []
+        if isinstance(skills, list):
+            cap["skills"] = sorted(skills, key=lambda s: str((s or {}).get("skill_id") or ""))
+        normalized.append(cap)
+    return sorted(normalized, key=lambda c: str(c.get("system_type") or c.get("system_name") or ""))
+
+
+def export_capability_contracts(systems: Optional[List[str]] = None) -> Dict[str, Any]:
+    res = discover_capabilities(systems)
+    capabilities = _normalize_capabilities(res.get("capabilities", []))
+    return {"capabilities": capabilities, "warnings": res.get("warnings", [])}
+
+
+def save_contract_baseline(path: str = "data/contract_baseline.json", systems: Optional[List[str]] = None) -> str:
+    payload = export_capability_contracts(systems)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def load_contract_baseline(path: str = "data/contract_baseline.json") -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def diff_contracts(baseline: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
+    breaking: List[str] = []
+    compatible: List[str] = []
+    base_caps = {str(c.get("system_type") or c.get("system_name")): c for c in baseline.get("capabilities", [])}
+    curr_caps = {str(c.get("system_type") or c.get("system_name")): c for c in current.get("capabilities", [])}
+    for key in base_caps:
+        if key not in curr_caps:
+            breaking.append(f"capability.{key}:removed")
+    for key in curr_caps:
+        if key not in base_caps:
+            compatible.append(f"capability.{key}:added")
+    for key, base_cap in base_caps.items():
+        curr_cap = curr_caps.get(key)
+        if not curr_cap:
+            continue
+        base_skills = {str(s.get("skill_id")): s for s in base_cap.get("skills", [])}
+        curr_skills = {str(s.get("skill_id")): s for s in curr_cap.get("skills", [])}
+        for sid in base_skills:
+            if sid not in curr_skills:
+                breaking.append(f"skill.{key}.{sid}:removed")
+        for sid in curr_skills:
+            if sid not in base_skills:
+                compatible.append(f"skill.{key}.{sid}:added")
+        for sid, base_skill in base_skills.items():
+            curr_skill = curr_skills.get(sid)
+            if not curr_skill:
+                continue
+            _compare_schema(f"skill.{key}.{sid}.input", base_skill.get("input_schema", {}), curr_skill.get("input_schema", {}), breaking, compatible)
+            _compare_schema(f"skill.{key}.{sid}.output", base_skill.get("output_schema", {}), curr_skill.get("output_schema", {}), breaking, compatible)
+    return {
+        "breaking_changes": breaking,
+        "compatible_changes": compatible,
+        "summary": {
+            "breaking_count": len(breaking),
+            "compatible_count": len(compatible),
+        }
+    }
+
+
+__all__ = [
+    "query_across_systems",
+    "nl_query",
+    "discover_capabilities",
+    "export_capability_contracts",
+    "save_contract_baseline",
+    "load_contract_baseline",
+    "diff_contracts",
+    "__version__",
+]
