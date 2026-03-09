@@ -36,6 +36,9 @@ class QueryResponse(BaseModel):
     persons: List[Dict[str, Any]] = Field(default_factory=list)
     customers: List[Dict[str, Any]] = Field(default_factory=list)
     transactions: List[Dict[str, Any]] = Field(default_factory=list)
+    status: Optional[str] = None
+    partial_success: Optional[bool] = None
+    missing_sources: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     error_details: List[Dict[str, Any]] = Field(default_factory=list)

@@ -106,6 +106,7 @@ class Executor:
         system: str,
         entity_type: Optional[str],
     ) -> ErrorSpec:
+        # 错误码标准化（E-DATASOURCE等）
         code_map = {
             "data_source": "E-DATASOURCE",
             "data_mapping": "E-DATAMAP",
@@ -113,6 +114,7 @@ class Executor:
             "timeout": "E-TIMEOUT",
             "unknown": "E-UNKNOWN",
         }
+        # 严重程度（critical/degraded）
         severity_map = {
             "data_source": "critical",
             "data_mapping": "degraded",
@@ -120,6 +122,7 @@ class Executor:
             "timeout": "degraded",
             "unknown": "critical",
         }
+        # 是否可重试（数据源错误可重试，映射错误不可重试）
         retryable_map = {
             "data_source": True,
             "data_mapping": False,
@@ -127,6 +130,7 @@ class Executor:
             "timeout": True,
             "unknown": False,
         }
+        # 降级策略（partial/none）
         fallback_map = {
             "data_source": "partial",
             "data_mapping": "partial",
@@ -134,6 +138,7 @@ class Executor:
             "timeout": "partial",
             "unknown": "none",
         }
+        # 影响范围分析
         blast_radius = [entity_type] if entity_type else ["organizations", "persons", "customers", "transactions"]
         return ErrorSpec(
             error_code=code_map.get(error_class, "E-UNKNOWN"),
@@ -298,6 +303,15 @@ class Executor:
         total_errors = len(error_details)
         total_agents = max(1, success_count + fail_count)
         error_rate = total_errors / total_agents
+        missing_sources = [item.get("system") for item in error_details if item.get("system")]
+        missing_sources = sorted({s for s in missing_sources if s})
+        partial_success = success_count > 0 and fail_count > 0
+        if fail_count == 0:
+            status = "ok"
+        elif success_count == 0:
+            status = "error"
+        else:
+            status = "degraded"
 
         return {
             "organizations": aggregated["organizations"],
@@ -306,6 +320,9 @@ class Executor:
             "transactions": aggregated["transactions"],
             "errors": errors,
             "error_details": error_details,
+            "status": status,
+            "partial_success": partial_success,
+            "missing_sources": missing_sources,
             "metrics": {
                 "per_agent_duration_ms": per_agent_duration_ms,
                 "per_agent_result_counts": per_agent_result_counts,
@@ -314,6 +331,8 @@ class Executor:
                 "success_count": success_count,
                 "fail_count": fail_count,
                 "total_duration_ms": total_duration_ms,
+                "degraded_count": 1 if status == "degraded" else 0,
+                "missing_sources": missing_sources,
                 "error_budget": {
                     "total_errors": total_errors,
                     "error_rate": error_rate,
